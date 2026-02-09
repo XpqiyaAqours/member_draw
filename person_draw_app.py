@@ -722,10 +722,11 @@ class PeopleFrame(ttk.Frame):
             show="headings",
             height=18,
         )
-        self.tree.heading("id", text="ID")
+        # 隐藏 ID 列，仅用于内部操作
+        self.tree.heading("id", text="")
         self.tree.heading("name", text="姓名")
         self.tree.heading("phone", text="手机号")
-        self.tree.column("id", width=70, anchor="center", stretch=False)
+        self.tree.column("id", width=0, minwidth=0, anchor="center", stretch=False)
         self.tree.column("name", width=200, anchor="center", stretch=True)
         self.tree.column("phone", width=260, anchor="center", stretch=True)
         self.tree.pack(side="left", fill="both", expand=True)
@@ -742,10 +743,10 @@ class PeopleFrame(ttk.Frame):
         self.btn_edit = ttk.Button(btn_bar, text="编辑", command=self.edit_person, width=9)
         self.btn_del = ttk.Button(btn_bar, text="删除", command=self.delete_person, width=9)
         self.btn_import = ttk.Button(
-            btn_bar, text="Excel 导入", command=self.import_excel, width=11
+            btn_bar, text="从Excel导入", command=self.import_excel, width=11
         )
         self.btn_export = ttk.Button(
-            btn_bar, text="Excel 导出", command=self.export_excel, width=11
+            btn_bar, text="导出至Excel", command=self.export_excel, width=11
         )
 
         for b in (
@@ -905,33 +906,35 @@ class LogsFrame(ttk.Frame):
             side="left", padx=8
         )
 
-        btn_bar = ttk.Frame(top)
-        btn_bar.pack(side="right")
+        # 标题下方中部按钮栏
+        btn_bar = ttk.Frame(outer)
+        btn_bar.pack(pady=(0, 10))
         ttk.Button(btn_bar, text="刷新", command=self.refresh_sessions, width=9).pack(
-            side="right", padx=5
+            side="left", padx=5
         )
         ttk.Button(
             btn_bar, text="发送记录至邮箱", command=self.send_logs_email, width=14
-        ).pack(side="right", padx=5)
+        ).pack(side="left", padx=5)
         ttk.Button(
-            btn_bar, text="导出全部日志 Excel", command=self.export_logs, width=18
-        ).pack(side="right", padx=5)
+            btn_bar, text="导出至Excel", command=self.export_logs, width=14
+        ).pack(side="left", padx=5)
 
         main = ttk.Panedwindow(outer, orient="horizontal")
         main.pack(fill="both", expand=True)
 
         # 左侧：session 列表
         left = ttk.Frame(main, padding=(0, 0, 8, 0))
-        columns = ("id", "title", "created_at")
+        columns = ("id", "created_at", "title")
         self.sessions_tree = ttk.Treeview(
             left, columns=columns, show="headings", height=18
         )
-        self.sessions_tree.heading("id", text="ID")
+        # 隐藏 ID 列，仅用于内部
+        self.sessions_tree.heading("id", text="")
+        self.sessions_tree.heading("created_at", text="时间")
         self.sessions_tree.heading("title", text="论政项目名称")
-        self.sessions_tree.heading("created_at", text="创建时间")
-        self.sessions_tree.column("id", width=70, anchor="center", stretch=False)
+        self.sessions_tree.column("id", width=0, minwidth=0, anchor="center", stretch=False)
+        self.sessions_tree.column("created_at", width=200, anchor="center", stretch=False)
         self.sessions_tree.column("title", width=260, stretch=True)
-        self.sessions_tree.column("created_at", width=230, anchor="center", stretch=True)
         self.sessions_tree.pack(side="left", fill="both", expand=True)
 
         vsb1 = ttk.Scrollbar(left, orient="vertical", command=self.sessions_tree.yview)
@@ -970,7 +973,7 @@ class LogsFrame(ttk.Frame):
         vsb2.pack(side="right", fill="y")
 
         main.add(left, weight=1)
-        main.add(right, weight=2)
+        main.add(right, weight=1)
 
     def refresh_sessions(self):
         for i in self.sessions_tree.get_children():
@@ -1627,12 +1630,13 @@ class UsersFrame(ttk.Frame):
             show="headings",
             height=18,
         )
-        self.tree.heading("id", text="ID")
+        # 隐藏 ID 列，仅用于内部
+        self.tree.heading("id", text="")
         self.tree.heading("username", text="用户名")
         self.tree.heading("email", text="电子邮箱")
         self.tree.heading("role", text="角色")
 
-        self.tree.column("id", width=70, anchor="center", stretch=False)
+        self.tree.column("id", width=0, minwidth=0, anchor="center", stretch=False)
         self.tree.column("username", width=180, anchor="w", stretch=True)
         self.tree.column("email", width=220, anchor="w", stretch=True)
         self.tree.column("role", width=120, anchor="center", stretch=False)
@@ -1656,10 +1660,10 @@ class UsersFrame(ttk.Frame):
             btn_bar, text="设为普通用户", command=lambda: self.change_role("user"), width=12
         )
         self.btn_import = ttk.Button(
-            btn_bar, text="Excel 导入", command=self.import_excel, width=11
+            btn_bar, text="从Excel导入", command=self.import_excel, width=11
         )
         self.btn_export = ttk.Button(
-            btn_bar, text="Excel 导出", command=self.export_excel, width=11
+            btn_bar, text="导出至Excel", command=self.export_excel, width=11
         )
 
         for b in (
