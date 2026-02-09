@@ -6,6 +6,8 @@ import datetime
 import random
 import os
 import ctypes
+import smtplib
+from email.message import EmailMessage
 
 try:
     import openpyxl
@@ -84,17 +86,24 @@ class Database:
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 username TEXT UNIQUE NOT NULL,
                 password_hash TEXT NOT NULL,
-                role TEXT NOT NULL CHECK(role IN ('admin','user'))
+                role TEXT NOT NULL CHECK(role IN ('admin','user')),
+                email TEXT
             )
         """
         )
+
+        # 兼容老版本库，尝试补充 email 字段
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN email TEXT")
+        except sqlite3.OperationalError:
+            pass
 
         # 若无用户则创建一个默认管理员
         c.execute("SELECT COUNT(*) AS cnt FROM users")
         if c.fetchone()["cnt"] == 0:
             c.execute(
-                "INSERT INTO users (username,password_hash,role) VALUES (?,?,?)",
-                ("admin", hash_password("admin123"), "admin"),
+                "INSERT INTO users (username,password_hash,role,email) VALUES (?,?,?,?)",
+                ("admin", hash_password("admin123"), "admin", ""),
             )
 
         # 专家名库表
@@ -140,12 +149,12 @@ class Database:
 
     # ---------- 用户相关 ----------
 
-    def register_user(self, username, password, role="user"):
+    def register_user(self, username, password, role="user", email=""):
         c = self.conn.cursor()
         try:
             c.execute(
-                "INSERT INTO users (username,password_hash,role) VALUES (?,?,?)",
-                (username, hash_password(password), role),
+                "INSERT INTO users (username,password_hash,role,email) VALUES (?,?,?,?)",
+                (username, hash_password(password), role, email),
             )
             self.conn.commit()
             return True, "注册成功"
@@ -164,10 +173,10 @@ class Database:
 
     def get_all_users(self):
         c = self.conn.cursor()
-        c.execute("SELECT id, username, role FROM users ORDER BY id ASC")
+        c.execute("SELECT id, username, role, email FROM users ORDER BY id ASC")
         return c.fetchall()
 
-    def update_user(self, user_id, username, role, new_password=None):
+    def update_user(self, user_id, username, role, new_password=None, email=""):
         c = self.conn.cursor()
         # 检查是否存在
         c.execute("SELECT * FROM users WHERE id=?", (user_id,))
@@ -185,19 +194,19 @@ class Database:
             c.execute(
                 """
                 UPDATE users
-                SET username=?, role=?, password_hash=?
+                SET username=?, role=?, password_hash=?, email=?
                 WHERE id=?
                 """,
-                (username, role, hash_password(new_password), user_id),
+                (username, role, hash_password(new_password), email, user_id),
             )
         else:
             c.execute(
                 """
                 UPDATE users
-                SET username=?, role=?
+                SET username=?, role=?, email=?
                 WHERE id=?
                 """,
-                (username, role, user_id),
+                (username, role, email, user_id),
             )
         self.conn.commit()
 
@@ -227,12 +236,12 @@ class Database:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "users"
-        ws.append(["用户名", "密码(明文)", "角色(admin/user)"])
+        ws.append(["用户名", "密码(明文)", "角色(admin/user)", "电子邮箱"])
         c = self.conn.cursor()
-        c.execute("SELECT username, role FROM users ORDER BY id ASC")
+        c.execute("SELECT username, role, email FROM users ORDER BY id ASC")
         # 密码无法还原成明文，这里导出为空，方便批量编辑再导入
         for r in c.fetchall():
-            ws.append([r["username"], "", r["role"]])
+            ws.append([r["username"], "", r["role"], r["email"] or ""])
         wb.save(path)
 
     def import_users_from_excel(self, path):
@@ -254,6 +263,7 @@ class Database:
                 if len(row) > 2 and row[2] in ("admin", "user")
                 else "user"
             )
+            email = str(row[3]).strip() if len(row) > 3 and row[3] else ""
             if not username:
                 continue
             # 如果已存在则更新角色并可选重置密码，否则新建
@@ -264,11 +274,11 @@ class Database:
                 uid = exist["id"]
                 # 更新：用户名不变（按 Excel）、角色变更，如提供密码则重置
                 if row[1]:
-                    self.update_user(uid, username, role, new_password=password)
+                    self.update_user(uid, username, role, new_password=password, email=email)
                 else:
-                    self.update_user(uid, username, role)
+                    self.update_user(uid, username, role, email=email)
             else:
-                self.register_user(username, password, role=role)
+                self.register_user(username, password, role=role, email=email)
 
     # ---------- 人员表 ----------
 
@@ -425,6 +435,63 @@ class Database:
             phone = str(row[1]).strip() if len(row) > 1 else ""
             if name:
                 self.add_person(name, phone)
+
+    def get_mail_config(self):
+        """获取邮件配置（若表不存在则初始化）"""
+        c = self.conn.cursor()
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS mail_config (
+                id INTEGER PRIMARY KEY CHECK (id = 1),
+                smtp_server TEXT,
+                smtp_port INTEGER,
+                use_ssl INTEGER,
+                use_tls INTEGER,
+                username TEXT,
+                password TEXT,
+                from_addr TEXT
+            )
+        """
+        )
+        c.execute("INSERT OR IGNORE INTO mail_config (id) VALUES (1)")
+        c.execute("SELECT * FROM mail_config WHERE id=1")
+        row = c.fetchone()
+        return {
+            "smtp_server": row["smtp_server"],
+            "smtp_port": row["smtp_port"] or 0,
+            "use_ssl": bool(row["use_ssl"]),
+            "use_tls": bool(row["use_tls"]),
+            "username": row["username"],
+            "password": row["password"],
+            "from_addr": row["from_addr"],
+        }
+
+    def save_mail_config(self, cfg: dict):
+        c = self.conn.cursor()
+        c.execute(
+            """
+            UPDATE mail_config
+            SET smtp_server=?, smtp_port=?, use_ssl=?, use_tls=?, username=?, password=?, from_addr=?
+            WHERE id=1
+        """,
+            (
+                cfg.get("smtp_server") or "",
+                int(cfg.get("smtp_port") or 0),
+                1 if cfg.get("use_ssl") else 0,
+                1 if cfg.get("use_tls") else 0,
+                cfg.get("username") or "",
+                cfg.get("password") or "",
+                cfg.get("from_addr") or "",
+            ),
+        )
+        self.conn.commit()
+
+    def get_admin_emails(self):
+        c = self.conn.cursor()
+        c.execute(
+            "SELECT email FROM users WHERE role='admin' AND email IS NOT NULL AND email<>''"
+        )
+        return [r["email"] for r in c.fetchall()]
 
     # Excel IO - 日志
     def export_logs_to_excel(self, path):
@@ -645,28 +712,6 @@ class PeopleFrame(ttk.Frame):
             side="left", padx=8
         )
 
-        btn_bar = ttk.Frame(top)
-        btn_bar.pack(side="right")
-
-        self.btn_add = ttk.Button(btn_bar, text="新增", command=self.add_person, width=9)
-        self.btn_edit = ttk.Button(btn_bar, text="编辑", command=self.edit_person, width=9)
-        self.btn_del = ttk.Button(btn_bar, text="删除", command=self.delete_person, width=9)
-        self.btn_import = ttk.Button(
-            btn_bar, text="Excel 导入", command=self.import_excel, width=11
-        )
-        self.btn_export = ttk.Button(
-            btn_bar, text="Excel 导出", command=self.export_excel, width=11
-        )
-
-        for b in (
-            self.btn_add,
-            self.btn_edit,
-            self.btn_del,
-            self.btn_import,
-            self.btn_export,
-        ):
-            b.pack(side="right", padx=5)
-
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill="both", expand=True)
 
@@ -688,6 +733,29 @@ class PeopleFrame(ttk.Frame):
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
+
+        # 下方中部按钮栏
+        btn_bar = ttk.Frame(outer)
+        btn_bar.pack(pady=15)
+
+        self.btn_add = ttk.Button(btn_bar, text="新增", command=self.add_person, width=9)
+        self.btn_edit = ttk.Button(btn_bar, text="编辑", command=self.edit_person, width=9)
+        self.btn_del = ttk.Button(btn_bar, text="删除", command=self.delete_person, width=9)
+        self.btn_import = ttk.Button(
+            btn_bar, text="Excel 导入", command=self.import_excel, width=11
+        )
+        self.btn_export = ttk.Button(
+            btn_bar, text="Excel 导出", command=self.export_excel, width=11
+        )
+
+        for b in (
+            self.btn_add,
+            self.btn_edit,
+            self.btn_del,
+            self.btn_import,
+            self.btn_export,
+        ):
+            b.pack(side="left", padx=8)
 
     def set_admin_mode(self, is_admin):
         state = "normal" if is_admin else "disabled"
@@ -843,6 +911,9 @@ class LogsFrame(ttk.Frame):
             side="right", padx=5
         )
         ttk.Button(
+            btn_bar, text="发送记录至邮箱", command=self.send_logs_email, width=14
+        ).pack(side="right", padx=5)
+        ttk.Button(
             btn_bar, text="导出全部日志 Excel", command=self.export_logs, width=18
         ).pack(side="right", padx=5)
 
@@ -960,6 +1031,15 @@ class LogsFrame(ttk.Frame):
             messagebox.showinfo("成功", "导出完成")
         except Exception as e:
             messagebox.showerror("错误", f"导出失败: {e}")
+
+    def send_logs_email(self):
+        """从日志界面发送一个或多个论政项目的日志到所有管理员邮箱"""
+        sel = self.sessions_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选择至少一个论政项目")
+            return
+        session_ids = [int(self.sessions_tree.item(i, "values")[0]) for i in sel]
+        self.app.send_sessions_email(self, session_ids)
 
 
 class DrawFrame(ttk.Frame):
@@ -1376,6 +1456,8 @@ class DrawFrame(ttk.Frame):
             self.supp_btn_draw["state"] = "disabled"
             self.supp_status_var.set(f"论政项目 ID {self.supplement_session_id} 补抽已完成")
             messagebox.showinfo("完成", "本次补抽流程已完成")
+            # 补抽完成后发送邮件
+            self.app.send_sessions_email(self, [self.supplement_session_id])
 
     def _supplement_finish(self):
         if self.supp_present_count < self.supplement_vacant_count:
@@ -1468,6 +1550,8 @@ class DrawFrame(ttk.Frame):
                 f"会话 ID {self.current_session_id} 已完成 (3 人到场)"
             )
             messagebox.showinfo("完成", "本次抽签流程已完成 3 名到场人员")
+            # 完成后发送邮件
+            self.app.send_sessions_email(self, [self.current_session_id])
         else:
             self.status_var.set(
                 f"会话 ID {self.current_session_id} 进行中，已到场 {self.present_count} 人"
@@ -1533,8 +1617,34 @@ class UsersFrame(ttk.Frame):
             side="left", padx=8
         )
 
-        btn_bar = ttk.Frame(top)
-        btn_bar.pack(side="right")
+        table_frame = ttk.Frame(outer)
+        table_frame.pack(fill="both", expand=True)
+
+        columns = ("id", "username", "email", "role")
+        self.tree = ttk.Treeview(
+            table_frame,
+            columns=columns,
+            show="headings",
+            height=18,
+        )
+        self.tree.heading("id", text="ID")
+        self.tree.heading("username", text="用户名")
+        self.tree.heading("email", text="电子邮箱")
+        self.tree.heading("role", text="角色")
+
+        self.tree.column("id", width=70, anchor="center", stretch=False)
+        self.tree.column("username", width=180, anchor="w", stretch=True)
+        self.tree.column("email", width=220, anchor="w", stretch=True)
+        self.tree.column("role", width=120, anchor="center", stretch=False)
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+
+        # 下方中部按钮栏
+        btn_bar = ttk.Frame(outer)
+        btn_bar.pack(pady=15)
 
         self.btn_add = ttk.Button(btn_bar, text="新增账号", command=self.add_user, width=10)
         self.btn_edit = ttk.Button(btn_bar, text="编辑账号", command=self.edit_user, width=10)
@@ -1561,30 +1671,7 @@ class UsersFrame(ttk.Frame):
             self.btn_import,
             self.btn_export,
         ):
-            b.pack(side="right", padx=4)
-
-        table_frame = ttk.Frame(outer)
-        table_frame.pack(fill="both", expand=True)
-
-        columns = ("id", "username", "role")
-        self.tree = ttk.Treeview(
-            table_frame,
-            columns=columns,
-            show="headings",
-            height=18,
-        )
-        self.tree.heading("id", text="ID")
-        self.tree.heading("username", text="用户名")
-        self.tree.heading("role", text="角色")
-
-        self.tree.column("id", width=70, anchor="center", stretch=False)
-        self.tree.column("username", width=220, anchor="w", stretch=True)
-        self.tree.column("role", width=120, anchor="center", stretch=False)
-        self.tree.pack(side="left", fill="both", expand=True)
-
-        vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        self.tree.configure(yscrollcommand=vsb.set)
-        vsb.pack(side="right", fill="y")
+            b.pack(side="left", padx=6)
 
     def refresh(self):
         for i in self.tree.get_children():
@@ -1594,7 +1681,7 @@ class UsersFrame(ttk.Frame):
             self.tree.insert(
                 "",
                 "end",
-                values=(row["id"], row["username"], role_text),
+                values=(row["id"], row["username"], row["email"] or "", role_text),
             )
 
     def _get_selected_id_role(self):
@@ -1603,7 +1690,7 @@ class UsersFrame(ttk.Frame):
             return None, None
         values = self.tree.item(sel[0], "values")
         uid = int(values[0])
-        role_text = values[2]
+        role_text = values[3]
         role = "admin" if role_text == "管理员" else "user"
         return uid, role
 
@@ -1652,8 +1739,17 @@ class UsersFrame(ttk.Frame):
             container, text="（留空则不修改密码）", foreground="gray"
         ).grid(row=2, column=1, padx=8, pady=(0, 10), sticky="w")
 
-        ttk.Label(container, text="角色:").grid(
+        ttk.Label(container, text="电子邮箱:").grid(
             row=3, column=0, padx=8, pady=10, sticky="e"
+        )
+        email_value = username if username and "@" in username else ""
+        email_var = tk.StringVar(value=email_value)
+        ttk.Entry(container, textvariable=email_var, width=28).grid(
+            row=3, column=1, padx=8, pady=10, sticky="w"
+        )
+
+        ttk.Label(container, text="角色:").grid(
+            row=4, column=0, padx=8, pady=10, sticky="e"
         )
         role_var = tk.StringVar(value="管理员" if role == "admin" else "普通用户")
         cb = ttk.Combobox(
@@ -1663,11 +1759,12 @@ class UsersFrame(ttk.Frame):
             state="readonly",
             width=25,
         )
-        cb.grid(row=3, column=1, padx=8, pady=10, sticky="w")
+        cb.grid(row=4, column=1, padx=8, pady=10, sticky="w")
 
         def on_ok():
             name = username_var.get().strip()
             pwd = pwd_var.get().strip()
+            email = email_var.get().strip()
             role_choice = "admin" if role_var.get() == "管理员" else "user"
             if not name:
                 messagebox.showwarning("提示", "用户名不能为空")
@@ -1678,15 +1775,15 @@ class UsersFrame(ttk.Frame):
                     if not pwd:
                         messagebox.showwarning("提示", "新增账号时密码不能为空")
                         return
-                    ok, msg = self.app.db.register_user(name, pwd, role=role_choice)
+                    ok, msg = self.app.db.register_user(name, pwd, role=role_choice, email=email)
                     if not ok:
                         messagebox.showerror("失败", msg)
                         return
                 else:
                     if pwd:
-                        self.app.db.update_user(user_id, name, role_choice, pwd)
+                        self.app.db.update_user(user_id, name, role_choice, pwd, email=email)
                     else:
-                        self.app.db.update_user(user_id, name, role_choice)
+                        self.app.db.update_user(user_id, name, role_choice, email=email)
                 self.refresh()
                 dlg.destroy()
             except Exception as e:
@@ -1771,11 +1868,112 @@ class UsersFrame(ttk.Frame):
             messagebox.showerror("错误", f"导出失败: {e}")
 
 
+class MailConfigFrame(ttk.Frame):
+    """邮件设置（仅管理员）"""
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.build_ui()
+        self.load_config()
+
+    def build_ui(self):
+        outer = ttk.Frame(self, padding=30)
+        outer.pack(fill="both", expand=True)
+
+        ttk.Label(outer, text="邮件设置（仅管理员）", font=SUBTITLE_FONT).pack(
+            anchor="w", padx=5, pady=(0, 15)
+        )
+
+        form = ttk.Frame(outer)
+        form.pack(pady=10, padx=10, anchor="center")
+
+        for i in range(2):
+            form.columnconfigure(i, weight=1)
+
+        ttk.Label(form, text="SMTP 服务器:").grid(row=0, column=0, sticky="e", padx=8, pady=6)
+        self.smtp_server_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.smtp_server_var, width=32).grid(
+            row=0, column=1, sticky="w", padx=8, pady=6
+        )
+
+        ttk.Label(form, text="端口:").grid(row=1, column=0, sticky="e", padx=8, pady=6)
+        self.smtp_port_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.smtp_port_var, width=10).grid(
+            row=1, column=1, sticky="w", padx=8, pady=6
+        )
+
+        ttk.Label(form, text="发件人邮箱:").grid(row=2, column=0, sticky="e", padx=8, pady=6)
+        self.from_addr_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.from_addr_var, width=32).grid(
+            row=2, column=1, sticky="w", padx=8, pady=6
+        )
+
+        ttk.Label(form, text="登录用户名:").grid(row=3, column=0, sticky="e", padx=8, pady=6)
+        self.username_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.username_var, width=32).grid(
+            row=3, column=1, sticky="w", padx=8, pady=6
+        )
+
+        ttk.Label(form, text="登录密码:").grid(row=4, column=0, sticky="e", padx=8, pady=6)
+        self.password_var = tk.StringVar()
+        ttk.Entry(form, textvariable=self.password_var, show="*", width=32).grid(
+            row=4, column=1, sticky="w", padx=8, pady=6
+        )
+
+        self.use_ssl_var = tk.BooleanVar(value=True)
+        self.use_tls_var = tk.BooleanVar(value=False)
+
+        ssl_frame = ttk.Frame(outer)
+        ssl_frame.pack(pady=5)
+        ttk.Checkbutton(
+            ssl_frame, text="使用 SSL", variable=self.use_ssl_var
+        ).pack(side="left", padx=10)
+        ttk.Checkbutton(
+            ssl_frame, text="使用 STARTTLS", variable=self.use_tls_var
+        ).pack(side="left", padx=10)
+
+        btn_frame = ttk.Frame(outer)
+        btn_frame.pack(pady=20)
+        ttk.Button(btn_frame, text="保存配置", command=self.save_config, width=12).pack(
+            side="left", padx=10
+        )
+
+    def load_config(self):
+        cfg = self.app.db.get_mail_config()
+        self.smtp_server_var.set(cfg.get("smtp_server") or "")
+        self.smtp_port_var.set(str(cfg.get("smtp_port") or ""))
+        self.from_addr_var.set(cfg.get("from_addr") or "")
+        self.username_var.set(cfg.get("username") or "")
+        self.password_var.set(cfg.get("password") or "")
+        self.use_ssl_var.set(cfg.get("use_ssl"))
+        self.use_tls_var.set(cfg.get("use_tls"))
+
+    def save_config(self):
+        try:
+            port = int(self.smtp_port_var.get() or 0)
+        except ValueError:
+            messagebox.showerror("错误", "端口必须是数字")
+            return
+        cfg = {
+            "smtp_server": self.smtp_server_var.get().strip(),
+            "smtp_port": port,
+            "from_addr": self.from_addr_var.get().strip(),
+            "username": self.username_var.get().strip(),
+            "password": self.password_var.get(),
+            "use_ssl": self.use_ssl_var.get(),
+            "use_tls": self.use_tls_var.get(),
+        }
+        self.app.db.save_mail_config(cfg)
+        messagebox.showinfo("成功", "邮件配置已保存")
+
+
 class MainFrame(ttk.Frame):
     def __init__(self, master, app):
         super().__init__(master)
         self.app = app
         self.account_tab_added = False
+        self.mail_tab_added = False
         self.build_ui()
 
     def build_ui(self):
@@ -1799,11 +1997,12 @@ class MainFrame(ttk.Frame):
         self.draw_frame = DrawFrame(self.notebook, self.app)
         self.logs_frame = LogsFrame(self.notebook, self.app)
         self.account_frame = UsersFrame(self.notebook, self.app)
+        self.mail_frame = MailConfigFrame(self.notebook, self.app)
 
         self.notebook.add(self.people_frame, text="专家名库")
         self.notebook.add(self.draw_frame, text="抽签")
         self.notebook.add(self.logs_frame, text="日志")
-        # 账号管理 Tab 在管理员登录后动态添加
+        # 账号管理 / 邮件设置 Tab 在管理员登录后动态添加
 
     def refresh_user_info(self):
         u = self.app.current_user
@@ -1812,20 +2011,29 @@ class MainFrame(ttk.Frame):
             self.user_label.configure(text=text)
             self.people_frame.set_admin_mode(u["role"] == "admin")
 
-            # 管理员才显示账号管理 Tab
+            # 管理员才显示账号管理 & 邮件设置 Tab
             if u["role"] == "admin":
                 if not self.account_tab_added:
                     self.notebook.add(self.account_frame, text="账号管理")
                     self.account_tab_added = True
+                if not self.mail_tab_added:
+                    self.notebook.add(self.mail_frame, text="邮件设置")
+                    self.mail_tab_added = True
             else:
                 if self.account_tab_added:
                     self.notebook.forget(self.account_frame)
                     self.account_tab_added = False
+                if self.mail_tab_added:
+                    self.notebook.forget(self.mail_frame)
+                    self.mail_tab_added = False
         else:
             self.user_label.configure(text="")
             if self.account_tab_added:
                 self.notebook.forget(self.account_frame)
                 self.account_tab_added = False
+            if self.mail_tab_added:
+                self.notebook.forget(self.mail_frame)
+                self.mail_tab_added = False
 
     def logout(self):
         if messagebox.askyesno("确认", "确定要退出登录吗？"):
@@ -1892,6 +2100,85 @@ class App(tk.Tk):
 
         # 在 Tk 初始化完成后，根据实际 DPI 设置 tk 的 scaling
         self.after(0, self._adjust_scaling_for_dpi)
+
+    def send_sessions_email(self, parent, session_ids):
+        """将一个或多个论政项目的日志发送到所有管理员邮箱"""
+        cfg = self.db.get_mail_config()
+        if not cfg["smtp_server"] or not cfg["from_addr"]:
+            messagebox.showerror(parent, "错误", "请先在“邮件设置”中配置 SMTP 服务器和发件人邮箱")
+            return False
+        admin_emails = self.db.get_admin_emails()
+        if not admin_emails:
+            messagebox.showerror(parent, "错误", "当前没有配置管理员邮箱，无法发送邮件")
+            return False
+
+        # 组装邮件内容
+        lines = []
+        for sid in session_ids:
+            sessions = [s for s in self.db.get_sessions() if s["id"] == sid]
+            if not sessions:
+                continue
+            s = sessions[0]
+            lines.append(f"论政项目 ID: {s['id']}")
+            lines.append(f"论政项目名称: {s['title'] or ''}")
+            lines.append(f"创建时间: {s['created_at']}")
+            lines.append("-" * 40)
+            logs = self.db.get_session_logs(sid)
+            for r in logs:
+                if r["present"] == 1:
+                    state = "到场"
+                elif r["absent_reason"] == "专家后续不到场，进行再次抽选。":
+                    state = "后续不到场"
+                else:
+                    state = "不到场"
+                lines.append(
+                    f"[{r['created_at']}] 姓名:{r['name']} 手机:{r['phone']} 到场情况:{state} 备注:{r['absent_reason'] or ''}"
+                )
+            lines.append("=" * 60)
+            lines.append("")
+
+        if not lines:
+            messagebox.showwarning(parent, "提示", "未找到可发送的日志记录")
+            return False
+
+        body = "\n".join(lines)
+        subject = "论政项目抽签结果"
+
+        while True:
+            try:
+                messagebox.showinfo(parent, "提示", "正在发送结果至管理员邮箱，请稍候...")
+
+                if cfg["use_ssl"]:
+                    server = smtplib.SMTP_SSL(cfg["smtp_server"], cfg["smtp_port"] or 465, timeout=10)
+                else:
+                    server = smtplib.SMTP(cfg["smtp_server"], cfg["smtp_port"] or 25, timeout=10)
+
+                try:
+                    if cfg["use_tls"]:
+                        server.starttls()
+                    if cfg["username"]:
+                        server.login(cfg["username"], cfg["password"] or "")
+
+                    msg = EmailMessage()
+                    msg["Subject"] = subject
+                    msg["From"] = cfg["from_addr"]
+                    msg["To"] = ", ".join(admin_emails)
+                    msg.set_content(body)
+
+                    server.send_message(msg)
+                finally:
+                    server.quit()
+
+                messagebox.showinfo(parent, "成功", "抽签结果邮件发送成功")
+                return True
+            except Exception as e:
+                retry = messagebox.askretrycancel(
+                    "发送失败",
+                    f"发送失败：{e}\n请检查网络和邮件配置。\n是否重试发送？",
+                    parent=parent,
+                )
+                if not retry:
+                    return False
 
     def _adjust_scaling_for_dpi(self):
         try:
