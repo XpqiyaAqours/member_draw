@@ -712,6 +712,34 @@ class PeopleFrame(ttk.Frame):
             side="left", padx=8
         )
 
+        # 标题下方中部按钮栏
+        btn_bar = ttk.Frame(outer)
+        btn_bar.pack(pady=15)
+
+        self.btn_add = ttk.Button(btn_bar, text="新增", command=self.add_person, width=9)
+        self.btn_edit = ttk.Button(btn_bar, text="编辑", command=self.edit_person, width=9)
+        self.btn_del = ttk.Button(btn_bar, text="删除", command=self.delete_person, width=9)
+        self.btn_import = ttk.Button(
+            btn_bar, text="从Excel导入", command=self.import_excel, width=11
+        )
+        self.btn_export = ttk.Button(
+            btn_bar, text="导出至Excel", command=self.export_excel, width=11
+        )
+
+        for b in (
+                self.btn_add,
+                self.btn_edit,
+                self.btn_del,
+                self.btn_import,
+                self.btn_export,
+        ):
+            b.pack(side="left", padx=8)
+
+
+
+
+
+
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill="both", expand=True)
 
@@ -735,28 +763,7 @@ class PeopleFrame(ttk.Frame):
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
 
-        # 下方中部按钮栏
-        btn_bar = ttk.Frame(outer)
-        btn_bar.pack(pady=15)
 
-        self.btn_add = ttk.Button(btn_bar, text="新增", command=self.add_person, width=9)
-        self.btn_edit = ttk.Button(btn_bar, text="编辑", command=self.edit_person, width=9)
-        self.btn_del = ttk.Button(btn_bar, text="删除", command=self.delete_person, width=9)
-        self.btn_import = ttk.Button(
-            btn_bar, text="从Excel导入", command=self.import_excel, width=11
-        )
-        self.btn_export = ttk.Button(
-            btn_bar, text="导出至Excel", command=self.export_excel, width=11
-        )
-
-        for b in (
-            self.btn_add,
-            self.btn_edit,
-            self.btn_del,
-            self.btn_import,
-            self.btn_export,
-        ):
-            b.pack(side="left", padx=8)
 
     def set_admin_mode(self, is_admin):
         state = "normal" if is_admin else "disabled"
@@ -982,7 +989,7 @@ class LogsFrame(ttk.Frame):
             self.sessions_tree.insert(
                 "",
                 "end",
-                values=(s["id"], s["title"], s["created_at"]),
+                values=(s["id"], s["created_at"], s["title"]),
             )
         for i in self.logs_tree.get_children():
             self.logs_tree.delete(i)
@@ -1620,6 +1627,37 @@ class UsersFrame(ttk.Frame):
             side="left", padx=8
         )
 
+        # 标题下方中部按钮栏
+        btn_bar = ttk.Frame(outer)
+        btn_bar.pack(pady=15)
+
+        self.btn_add = ttk.Button(btn_bar, text="新增账号", command=self.add_user, width=10)
+        self.btn_edit = ttk.Button(btn_bar, text="编辑账号", command=self.edit_user, width=10)
+        self.btn_del = ttk.Button(btn_bar, text="删除账号", command=self.delete_user, width=10)
+        self.btn_set_admin = ttk.Button(
+            btn_bar, text="设为管理员", command=lambda: self.change_role("admin"), width=11
+        )
+        self.btn_set_user = ttk.Button(
+            btn_bar, text="设为普通用户", command=lambda: self.change_role("user"), width=12
+        )
+        self.btn_import = ttk.Button(
+            btn_bar, text="从Excel导入", command=self.import_excel, width=11
+        )
+        self.btn_export = ttk.Button(
+            btn_bar, text="导出至Excel", command=self.export_excel, width=11
+        )
+
+        for b in (
+                self.btn_add,
+                self.btn_edit,
+                self.btn_del,
+                self.btn_set_admin,
+                self.btn_set_user,
+                self.btn_import,
+                self.btn_export,
+        ):
+            b.pack(side="left", padx=6)
+
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill="both", expand=True)
 
@@ -1646,36 +1684,7 @@ class UsersFrame(ttk.Frame):
         self.tree.configure(yscrollcommand=vsb.set)
         vsb.pack(side="right", fill="y")
 
-        # 下方中部按钮栏
-        btn_bar = ttk.Frame(outer)
-        btn_bar.pack(pady=15)
 
-        self.btn_add = ttk.Button(btn_bar, text="新增账号", command=self.add_user, width=10)
-        self.btn_edit = ttk.Button(btn_bar, text="编辑账号", command=self.edit_user, width=10)
-        self.btn_del = ttk.Button(btn_bar, text="删除账号", command=self.delete_user, width=10)
-        self.btn_set_admin = ttk.Button(
-            btn_bar, text="设为管理员", command=lambda: self.change_role("admin"), width=11
-        )
-        self.btn_set_user = ttk.Button(
-            btn_bar, text="设为普通用户", command=lambda: self.change_role("user"), width=12
-        )
-        self.btn_import = ttk.Button(
-            btn_bar, text="从Excel导入", command=self.import_excel, width=11
-        )
-        self.btn_export = ttk.Button(
-            btn_bar, text="导出至Excel", command=self.export_excel, width=11
-        )
-
-        for b in (
-            self.btn_add,
-            self.btn_edit,
-            self.btn_del,
-            self.btn_set_admin,
-            self.btn_set_user,
-            self.btn_import,
-            self.btn_export,
-        ):
-            b.pack(side="left", padx=6)
 
     def refresh(self):
         for i in self.tree.get_children():
@@ -2055,7 +2064,7 @@ class App(tk.Tk):
         # 初始窗口大小，允许缩放
         self.title("人员管理与抽签系统")
         self.geometry("1400x900")
-        self.minsize(1000, 700)
+        self.minsize(1600, 900)
         self.resizable(True, True)
 
         # 全局字体
