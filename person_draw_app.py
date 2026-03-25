@@ -2301,7 +2301,6 @@ class App(tk.Tk):
 
         while True:
             try:
-                self.after(100, lambda: messagebox.showinfo("提示", "正在发送结果至管理员邮箱，请稍候..."))
 
                 if cfg["use_ssl"]:
                     server = smtplib.SMTP_SSL(cfg["smtp_server"], cfg["smtp_port"] or 465, timeout=10)
