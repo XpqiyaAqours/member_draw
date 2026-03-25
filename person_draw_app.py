@@ -7,6 +7,7 @@ import random
 import os
 import ctypes
 import smtplib
+import socket
 from email.message import EmailMessage
 
 try:
@@ -112,10 +113,22 @@ class Database:
             CREATE TABLE IF NOT EXISTS people (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 name TEXT NOT NULL,
-                phone TEXT NOT NULL
+                unit TEXT,
+                phone TEXT NOT NULL,
+                blocked INTEGER NOT NULL DEFAULT 0
             )
         """
         )
+
+        # 兼容老版本库，尝试补充 unit 和 blocked 字段
+        try:
+            c.execute("ALTER TABLE people ADD COLUMN unit TEXT")
+        except sqlite3.OperationalError:
+            pass
+        try:
+            c.execute("ALTER TABLE people ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
         # 抽签会话索引表（每次完整抽 3 人为一次记录）
         c.execute(
@@ -287,11 +300,17 @@ class Database:
         c.execute("SELECT * FROM people ORDER BY id ASC")
         return c.fetchall()
 
-    def add_person(self, name, phone):
+    def get_available_people(self):
+        """获取未被屏蔽的人员列表（用于抽签）"""
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM people WHERE blocked=0 ORDER BY id ASC")
+        return c.fetchall()
+
+    def add_person(self, name, phone, unit=""):
         c = self.conn.cursor()
         c.execute(
-            "INSERT INTO people (name,phone) VALUES (?,?)",
-            (name, phone),
+            "INSERT INTO people (name,unit,phone,blocked) VALUES (?,?,?,0)",
+            (name, unit, phone),
         )
         self.conn.commit()
 
@@ -300,11 +319,20 @@ class Database:
         c.execute("DELETE FROM people WHERE id=?", (person_id,))
         self.conn.commit()
 
-    def update_person(self, person_id, name, phone):
+    def update_person(self, person_id, name, phone, unit=""):
         c = self.conn.cursor()
         c.execute(
-            "UPDATE people SET name=?, phone=? WHERE id=?",
-            (name, phone, person_id),
+            "UPDATE people SET name=?, unit=?, phone=? WHERE id=?",
+            (name, unit, phone, person_id),
+        )
+        self.conn.commit()
+
+    def set_person_blocked(self, person_id, blocked):
+        """设置人员的屏蔽状态"""
+        c = self.conn.cursor()
+        c.execute(
+            "UPDATE people SET blocked=? WHERE id=?",
+            (1 if blocked else 0, person_id),
         )
         self.conn.commit()
 
@@ -414,27 +442,46 @@ class Database:
         wb = openpyxl.Workbook()
         ws = wb.active
         ws.title = "people"
-        ws.append(["姓名", "手机号"])
+        ws.append(["姓名", "单位", "电话", "是否屏蔽"])
         for row in self.get_all_people():
-            ws.append([row["name"], row["phone"]])
+            ws.append([row["name"], row["unit"] or "", row["phone"], "是" if row["blocked"] else "否"])
         wb.save(path)
 
     def import_people_from_excel(self, path):
         if openpyxl is None:
             raise RuntimeError("缺少 openpyxl 库，无法导入 Excel")
         wb = openpyxl.load_workbook(path)
-        ws = wb.active
-        first = True
-        for row in ws.iter_rows(values_only=True):
-            if first:
-                first = False
-                continue
-            if not row or not row[0]:
-                continue
-            name = str(row[0]).strip()
-            phone = str(row[1]).strip() if len(row) > 1 else ""
-            if name:
-                self.add_person(name, phone)
+        for sheet_name in wb.sheetnames:
+            ws = wb[sheet_name]
+            for row in ws.iter_rows(values_only=True):
+                values = list(row) if row else []
+                if len(values) < 9:
+                    continue
+                name = values[1]
+                unit = values[7]
+                phone = values[8]
+                if not name or not phone:
+                    continue
+                name = str(name).strip()
+                unit = str(unit).strip() if unit else ""
+                phone = str(phone).strip()
+                if name in ("姓名", "") or phone in ("联系电话", ""):
+                    continue
+                c = self.conn.cursor()
+                c.execute("SELECT id FROM people WHERE name=? AND phone=?", (name, phone))
+                exist = c.fetchone()
+                if exist:
+                    c.execute(
+                        "UPDATE people SET unit=? WHERE id=?",
+                        (unit, exist["id"]),
+                    )
+                    self.conn.commit()
+                else:
+                    c.execute(
+                        "INSERT INTO people (name,unit,phone,blocked) VALUES (?,?,?,0)",
+                        (name, unit, phone),
+                    )
+                    self.conn.commit()
 
     def get_mail_config(self):
         """获取邮件配置（若表不存在则初始化）"""
@@ -719,6 +766,8 @@ class PeopleFrame(ttk.Frame):
         self.btn_add = ttk.Button(btn_bar, text="新增", command=self.add_person, width=9)
         self.btn_edit = ttk.Button(btn_bar, text="编辑", command=self.edit_person, width=9)
         self.btn_del = ttk.Button(btn_bar, text="删除", command=self.delete_person, width=9)
+        self.btn_block = ttk.Button(btn_bar, text="屏蔽", command=self.block_person, width=9)
+        self.btn_unblock = ttk.Button(btn_bar, text="取消屏蔽", command=self.unblock_person, width=11)
         self.btn_import = ttk.Button(
             btn_bar, text="从Excel导入", command=self.import_excel, width=11
         )
@@ -730,6 +779,8 @@ class PeopleFrame(ttk.Frame):
                 self.btn_add,
                 self.btn_edit,
                 self.btn_del,
+                self.btn_block,
+                self.btn_unblock,
                 self.btn_import,
                 self.btn_export,
         ):
@@ -743,20 +794,23 @@ class PeopleFrame(ttk.Frame):
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill="both", expand=True)
 
-        columns = ("id", "name", "phone")
+        columns = ("id", "name", "unit", "phone", "blocked")
         self.tree = ttk.Treeview(
             table_frame,
             columns=columns,
             show="headings",
             height=18,
         )
-        # 隐藏 ID 列，仅用于内部操作
         self.tree.heading("id", text="")
         self.tree.heading("name", text="姓名")
-        self.tree.heading("phone", text="手机号")
+        self.tree.heading("unit", text="单位")
+        self.tree.heading("phone", text="电话")
+        self.tree.heading("blocked", text="是否屏蔽")
         self.tree.column("id", width=0, minwidth=0, anchor="center", stretch=False)
-        self.tree.column("name", width=200, anchor="center", stretch=True)
-        self.tree.column("phone", width=260, anchor="center", stretch=True)
+        self.tree.column("name", width=120, anchor="center", stretch=True)
+        self.tree.column("unit", width=280, anchor="center", stretch=True)
+        self.tree.column("phone", width=140, anchor="center", stretch=True)
+        self.tree.column("blocked", width=80, anchor="center", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
 
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -767,7 +821,7 @@ class PeopleFrame(ttk.Frame):
 
     def set_admin_mode(self, is_admin):
         state = "normal" if is_admin else "disabled"
-        for b in (self.btn_add, self.btn_edit, self.btn_del, self.btn_import):
+        for b in (self.btn_add, self.btn_edit, self.btn_del, self.btn_block, self.btn_unblock, self.btn_import):
             b["state"] = state
         self.btn_export["state"] = "normal"
 
@@ -775,10 +829,11 @@ class PeopleFrame(ttk.Frame):
         for i in self.tree.get_children():
             self.tree.delete(i)
         for row in self.app.db.get_all_people():
+            blocked_text = "是" if row["blocked"] else "否"
             self.tree.insert(
                 "",
                 "end",
-                values=(row["id"], row["name"], row["phone"]),
+                values=(row["id"], row["name"], row["unit"] or "", row["phone"], blocked_text),
             )
 
     def _get_selected_id(self):
@@ -799,9 +854,27 @@ class PeopleFrame(ttk.Frame):
         if pid not in people:
             return
         p = people[pid]
-        self._edit_dialog(pid, p["name"], p["phone"])
+        self._edit_dialog(pid, p["name"], p["phone"], p["unit"] or "")
 
-    def _edit_dialog(self, person_id=None, name="", phone=""):
+    def block_person(self):
+        pid = self._get_selected_id()
+        if not pid:
+            messagebox.showwarning("提示", "请先选择一条记录")
+            return
+        self.app.db.set_person_blocked(pid, True)
+        self.refresh()
+        messagebox.showinfo("成功", "已屏蔽该人员，将不参与抽签")
+
+    def unblock_person(self):
+        pid = self._get_selected_id()
+        if not pid:
+            messagebox.showwarning("提示", "请先选择一条记录")
+            return
+        self.app.db.set_person_blocked(pid, False)
+        self.refresh()
+        messagebox.showinfo("成功", "已取消屏蔽该人员")
+
+    def _edit_dialog(self, person_id=None, name="", phone="", unit=""):
         dlg = tk.Toplevel(self)
         dlg.title("人员信息")
         dlg.grab_set()
@@ -820,29 +893,38 @@ class PeopleFrame(ttk.Frame):
             row=0, column=1, padx=8, pady=10, sticky="w"
         )
 
-        ttk.Label(container, text="手机号:").grid(
+        ttk.Label(container, text="单位:").grid(
             row=1, column=0, padx=8, pady=10, sticky="e"
+        )
+        unit_var = tk.StringVar(value=unit)
+        ttk.Entry(container, textvariable=unit_var, width=28).grid(
+            row=1, column=1, padx=8, pady=10, sticky="w"
+        )
+
+        ttk.Label(container, text="电话:").grid(
+            row=2, column=0, padx=8, pady=10, sticky="e"
         )
         phone_var = tk.StringVar(value=phone)
         ttk.Entry(container, textvariable=phone_var, width=28).grid(
-            row=1, column=1, padx=8, pady=10, sticky="w"
+            row=2, column=1, padx=8, pady=10, sticky="w"
         )
 
         def on_ok():
             n = name_var.get().strip()
+            u = unit_var.get().strip()
             ph = phone_var.get().strip()
             if not n:
                 messagebox.showwarning("提示", "姓名不能为空")
                 return
             if person_id is None:
-                self.app.db.add_person(n, ph)
+                self.app.db.add_person(n, ph, u)
             else:
-                self.app.db.update_person(person_id, n, ph)
+                self.app.db.update_person(person_id, n, ph, u)
             self.refresh()
             dlg.destroy()
 
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=2, column=0, columnspan=2, pady=(18, 0))
+        btn_frame.grid(row=3, column=0, columnspan=2, pady=(18, 0))
         ttk.Button(btn_frame, text="确定", command=on_ok, width=11).grid(
             row=0, column=0, padx=10
         )
@@ -1065,6 +1147,10 @@ class DrawFrame(ttk.Frame):
         self.supplement_session_id = None
         self.supplement_vacant_count = 0
         self.supplement_order_base = 0
+        self.is_drawing = False
+        self.draw_animation_id = None
+        self.supp_is_drawing = False
+        self.supp_animation_id = None
         self.build_ui()
 
     def build_ui(self):
@@ -1210,7 +1296,8 @@ class DrawFrame(ttk.Frame):
         btns = ttk.Frame(outer)
         btns.pack(pady=20)
 
-        self.btn_draw = ttk.Button(btns, text="抽签", command=self.draw_one, width=12)
+        self.btn_draw = ttk.Button(btns, text="抽签", command=self.start_draw_animation, width=12)
+        self.btn_stop = ttk.Button(btns, text="停止", command=self.stop_draw_animation, width=12)
         self.btn_present = ttk.Button(
             btns, text="到场", command=lambda: self.mark_result(True), width=12
         )
@@ -1219,8 +1306,9 @@ class DrawFrame(ttk.Frame):
         )
 
         self.btn_draw.grid(row=0, column=0, padx=15)
-        self.btn_present.grid(row=0, column=1, padx=15)
-        self.btn_absent.grid(row=0, column=2, padx=15)
+        self.btn_stop.grid(row=0, column=0, padx=15)
+        self.btn_present.grid(row=0, column=0, padx=15)
+        self.btn_absent.grid(row=0, column=1, padx=15)
 
         ttk.Label(
             outer,
@@ -1303,10 +1391,12 @@ class DrawFrame(ttk.Frame):
 
         supp_btns = ttk.Frame(self.supp_step3)
         supp_btns.pack(pady=10)
-        self.supp_btn_draw = ttk.Button(supp_btns, text="抽签", command=self._supplement_draw_one, width=12)
+        self.supp_btn_draw = ttk.Button(supp_btns, text="抽签", command=self._supplement_start_animation, width=12)
+        self.supp_btn_stop = ttk.Button(supp_btns, text="停止", command=self._supplement_stop_animation, width=12)
         self.supp_btn_present = ttk.Button(supp_btns, text="到场", command=lambda: self._supplement_mark_result(True), width=12)
         self.supp_btn_absent = ttk.Button(supp_btns, text="不到场", command=lambda: self._supplement_mark_result(False), width=12)
         self.supp_btn_draw.grid(row=0, column=0, padx=10)
+        self.supp_btn_stop.grid(row=0, column=0, padx=10)
         self.supp_btn_present.grid(row=0, column=1, padx=10)
         self.supp_btn_absent.grid(row=0, column=2, padx=10)
 
@@ -1357,12 +1447,16 @@ class DrawFrame(ttk.Frame):
         self.supp_present_count = 0
         self.supp_current_person = None
         self.supp_order_no = self.supplement_order_base
-        people = self.app.db.get_all_people()
+        people = self.app.db.get_available_people()
         self.supp_people_cache = list(people)
         self.supp_status_var.set(f"论政项目 ID {self.supplement_session_id} 补抽，需补 {self.supplement_vacant_count} 人")
         self.supp_present_var.set(f"0 / {self.supplement_vacant_count}")
         self.supp_name_var.set("")
         self.supp_phone_var.set("")
+        self.supp_btn_stop.grid_remove()
+        self.supp_btn_present.grid_remove()
+        self.supp_btn_absent.grid_remove()
+        self.supp_btn_draw.grid()
         self.supp_btn_draw["state"] = "normal"
         self.supp_btn_present["state"] = "disabled"
         self.supp_btn_absent["state"] = "disabled"
@@ -1424,19 +1518,43 @@ class DrawFrame(ttk.Frame):
         dlg.wait_window()
         return res["value"]
 
-    def _supplement_draw_one(self):
+    def _supplement_start_animation(self):
         if self.supp_present_count >= self.supplement_vacant_count:
             messagebox.showinfo("提示", "本次补抽已完成")
             return
         if not self.supp_people_cache:
             messagebox.showwarning("提示", "专家名库为空，无法抽签")
             return
+
+        self.supp_is_drawing = True
+        self.supp_btn_draw.grid_remove()
+        self.supp_btn_stop.grid()
+        self._supplement_animate_draw()
+
+    def _supplement_animate_draw(self):
+        if not self.supp_is_drawing:
+            return
+        person = random.choice(self.supp_people_cache)
+        self.supp_name_var.set(person["name"])
+        self.supp_phone_var.set(person["phone"])
+        self.supp_animation_id = self.after(50, self._supplement_animate_draw)
+
+    def _supplement_stop_animation(self):
+        if not self.supp_is_drawing:
+            return
+        self.supp_is_drawing = False
+        if self.supp_animation_id:
+            self.after_cancel(self.supp_animation_id)
+            self.supp_animation_id = None
+
         self.supp_current_person = random.choice(self.supp_people_cache)
         self.supp_order_no += 1
         self.supp_name_var.set(self.supp_current_person["name"])
         self.supp_phone_var.set(self.supp_current_person["phone"])
-        self.supp_btn_present["state"] = "normal"
-        self.supp_btn_absent["state"] = "normal"
+
+        self.supp_btn_stop.grid_remove()
+        self.supp_btn_present.grid()
+        self.supp_btn_absent.grid()
 
     def _supplement_mark_result(self, present: bool):
         if self.supp_current_person is None:
@@ -1460,13 +1578,13 @@ class DrawFrame(ttk.Frame):
         self.supp_current_person = None
         self.supp_name_var.set("")
         self.supp_phone_var.set("")
-        self.supp_btn_present["state"] = "disabled"
-        self.supp_btn_absent["state"] = "disabled"
+        self.supp_btn_present.grid_remove()
+        self.supp_btn_absent.grid_remove()
+        self.supp_btn_draw.grid()
         if self.supp_present_count >= self.supplement_vacant_count:
             self.supp_btn_draw["state"] = "disabled"
             self.supp_status_var.set(f"论政项目 ID {self.supplement_session_id} 补抽已完成")
             messagebox.showinfo("完成", "本次补抽流程已完成")
-            # 补抽完成后发送邮件
             self.app.send_sessions_email(self, [self.supplement_session_id])
 
     def _supplement_finish(self):
@@ -1476,23 +1594,65 @@ class DrawFrame(ttk.Frame):
         self._show_choice()
 
     def set_buttons_state(self, started):
+        self.btn_stop.grid_remove()
+        self.btn_present.grid_remove()
+        self.btn_absent.grid_remove()
         if not started:
             self.btn_draw["state"] = "disabled"
-            self.btn_present["state"] = "disabled"
-            self.btn_absent["state"] = "disabled"
+            self.btn_draw.grid()
         else:
             self.btn_draw["state"] = "normal"
-            self.btn_present["state"] = "disabled"
-            self.btn_absent["state"] = "disabled"
+            self.btn_draw.grid()
+
+    def start_draw_animation(self):
+        if self.current_session_id is None:
+            messagebox.showwarning("提示", "请先点击\"开始新抽签\"")
+            return
+        if self.present_count >= 3:
+            messagebox.showinfo("提示", "本次抽签已完成 3 名到场人员")
+            return
+        if not self.people_cache:
+            messagebox.showwarning("提示", "专家名库为空，无法抽签")
+            return
+
+        self.is_drawing = True
+        self.btn_draw.grid_remove()
+        self.btn_stop.grid()
+        self._animate_draw()
+
+    def _animate_draw(self):
+        if not self.is_drawing:
+            return
+        person = random.choice(self.people_cache)
+        self.name_var.set(person["name"])
+        self.phone_var.set(person["phone"])
+        self.draw_animation_id = self.after(50, self._animate_draw)
+
+    def stop_draw_animation(self):
+        if not self.is_drawing:
+            return
+        self.is_drawing = False
+        if self.draw_animation_id:
+            self.after_cancel(self.draw_animation_id)
+            self.draw_animation_id = None
+
+        self.current_person = random.choice(self.people_cache)
+        self.order_no += 1
+        self.name_var.set(self.current_person["name"])
+        self.phone_var.set(self.current_person["phone"])
+
+        self.btn_stop.grid_remove()
+        self.btn_present.grid()
+        self.btn_absent.grid()
 
     def start_new_session(self):
         title = self.title_var.get().strip()
         if not title:
             if not messagebox.askyesno("提示", "未填写论政项目名称，是否继续？"):
                 return
-        people = self.app.db.get_all_people()
+        people = self.app.db.get_available_people()
         if not people:
-            messagebox.showwarning("提示", "当前无专家名库，请先在专家名库中添加人员")
+            messagebox.showwarning("提示", "当前无可用专家（可能全部被屏蔽），请先在专家名库中添加人员或取消屏蔽")
             return
 
         sid = self.app.db.create_session(title or "未命名论政项目")
@@ -1506,25 +1666,7 @@ class DrawFrame(ttk.Frame):
         self.name_var.set("")
         self.phone_var.set("")
         self.set_buttons_state(started=True)
-        messagebox.showinfo("提示", "已开始新的抽签会话，可点击“抽签”")
-
-    def draw_one(self):
-        if self.current_session_id is None:
-            messagebox.showwarning("提示", "请先点击“开始新抽签”")
-            return
-        if self.present_count >= 3:
-            messagebox.showinfo("提示", "本次抽签已完成 3 名到场人员")
-            return
-        if not self.people_cache:
-            messagebox.showwarning("提示", "专家名库为空，无法抽签")
-            return
-
-        self.current_person = random.choice(self.people_cache)
-        self.order_no += 1
-        self.name_var.set(self.current_person["name"])
-        self.phone_var.set(self.current_person["phone"])
-        self.btn_present["state"] = "normal"
-        self.btn_absent["state"] = "normal"
+        messagebox.showinfo("提示", "已开始新的抽签会话，可点击\"抽签\"")
 
     def mark_result(self, present: bool):
         if self.current_person is None:
@@ -1551,8 +1693,9 @@ class DrawFrame(ttk.Frame):
         self.current_person = None
         self.name_var.set("")
         self.phone_var.set("")
-        self.btn_present["state"] = "disabled"
-        self.btn_absent["state"] = "disabled"
+        self.btn_present.grid_remove()
+        self.btn_absent.grid_remove()
+        self.btn_draw.grid()
 
         if self.present_count >= 3:
             self.btn_draw["state"] = "disabled"
@@ -1560,7 +1703,6 @@ class DrawFrame(ttk.Frame):
                 f"会话 ID {self.current_session_id} 已完成 (3 人到场)"
             )
             messagebox.showinfo("完成", "本次抽签流程已完成 3 名到场人员")
-            # 完成后发送邮件
             self.app.send_sessions_email(self, [self.current_session_id])
         else:
             self.status_var.set(
@@ -1803,7 +1945,7 @@ class UsersFrame(ttk.Frame):
                 messagebox.showerror("错误", str(e))
 
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=4, column=0, columnspan=2, pady=(18, 0))
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=(18, 0))
         ttk.Button(btn_frame, text="确定", command=on_ok, width=11).grid(
             row=0, column=0, padx=10
         )
@@ -2159,7 +2301,7 @@ class App(tk.Tk):
 
         while True:
             try:
-                messagebox.showinfo(parent, "提示", "正在发送结果至管理员邮箱，请稍候...")
+                self.after(100, lambda: messagebox.showinfo("提示", "正在发送结果至管理员邮箱，请稍候..."))
 
                 if cfg["use_ssl"]:
                     server = smtplib.SMTP_SSL(cfg["smtp_server"], cfg["smtp_port"] or 465, timeout=10)
@@ -2182,14 +2324,57 @@ class App(tk.Tk):
                 finally:
                     server.quit()
 
-                messagebox.showinfo(parent, "成功", "抽签结果邮件发送成功")
+                messagebox.showinfo("发送成功", "抽签结果邮件已成功发送至管理员邮箱！")
                 return True
+            except smtplib.SMTPAuthenticationError as e:
+                error_msg = f"邮件发送失败：邮箱认证错误\n\n原因：用户名或密码错误\n详细信息：{e}\n\n请检查邮件设置中的用户名和密码是否正确。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except smtplib.SMTPConnectError as e:
+                error_msg = f"邮件发送失败：无法连接到邮件服务器\n\n原因：服务器连接失败\n详细信息：{e}\n\n请检查SMTP服务器地址和端口是否正确。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except smtplib.SMTPServerDisconnected as e:
+                error_msg = f"邮件发送失败：服务器连接断开\n\n原因：连接被服务器意外关闭\n详细信息：{e}\n\n请检查网络连接是否稳定。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except smtplib.SMTPRecipientsRefused as e:
+                error_msg = f"邮件发送失败：收件人地址被拒绝\n\n原因：管理员邮箱地址无效或被服务器拒绝\n详细信息：{e}\n\n请检查管理员邮箱配置。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except smtplib.SMTPSenderRefused as e:
+                error_msg = f"邮件发送失败：发件人地址被拒绝\n\n原因：发件人邮箱地址无效或未被授权\n详细信息：{e}\n\n请检查邮件设置中的发件人邮箱。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except smtplib.SMTPDataError as e:
+                error_msg = f"邮件发送失败：邮件数据错误\n\n原因：邮件内容格式有问题\n详细信息：{e}\n\n请联系技术支持。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except socket.timeout as e:
+                error_msg = f"邮件发送失败：连接超时\n\n原因：服务器响应时间过长\n详细信息：{e}\n\n请检查网络连接或稍后重试。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except socket.gaierror as e:
+                error_msg = f"邮件发送失败：网络地址解析失败\n\n原因：无法解析SMTP服务器地址\n详细信息：{e}\n\n请检查服务器地址是否正确，以及网络连接是否正常。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
+            except ConnectionRefusedError as e:
+                error_msg = f"邮件发送失败：连接被拒绝\n\n原因：服务器拒绝连接\n详细信息：{e}\n\n请检查SMTP端口是否正确。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
+                if not retry:
+                    return False
             except Exception as e:
-                retry = messagebox.askretrycancel(
-                    "发送失败",
-                    f"发送失败：{e}\n请检查网络和邮件配置。\n是否重试发送？",
-                    parent=parent,
-                )
+                error_type = type(e).__name__
+                error_msg = f"邮件发送失败：未知错误\n\n错误类型：{error_type}\n详细信息：{e}\n\n请检查网络和邮件配置后重试。"
+                retry = messagebox.askretrycancel("发送失败", error_msg)
                 if not retry:
                     return False
 
