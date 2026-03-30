@@ -99,6 +99,12 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # 兼容老版本库，尝试补充 receive_email 字段
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN receive_email INTEGER NOT NULL DEFAULT 1")
+        except sqlite3.OperationalError:
+            pass
+
         # 若无用户则创建一个默认管理员
         c.execute("SELECT COUNT(*) AS cnt FROM users")
         if c.fetchone()["cnt"] == 0:
@@ -136,10 +142,17 @@ class Database:
             CREATE TABLE IF NOT EXISTS sessions (
                 id INTEGER PRIMARY KEY AUTOINCREMENT,
                 title TEXT,
-                created_at TEXT NOT NULL
+                created_at TEXT NOT NULL,
+                completed INTEGER NOT NULL DEFAULT 0
             )
         """
         )
+        
+        # 为旧数据添加 completed 字段（如果不存在）
+        try:
+            c.execute("ALTER TABLE sessions ADD COLUMN completed INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
         # 抽签详细日志表
         c.execute(
@@ -159,15 +172,18 @@ class Database:
         )
 
         self.conn.commit()
+        
+        # 清理未完成的会话及其日志
+        self.delete_incomplete_sessions()
 
     # ---------- 用户相关 ----------
 
-    def register_user(self, username, password, role="user", email=""):
+    def register_user(self, username, password, role="user", email="", receive_email=1):
         c = self.conn.cursor()
         try:
             c.execute(
-                "INSERT INTO users (username,password_hash,role,email) VALUES (?,?,?,?)",
-                (username, hash_password(password), role, email),
+                "INSERT INTO users (username,password_hash,role,email,receive_email) VALUES (?,?,?,?,?)",
+                (username, hash_password(password), role, email, receive_email),
             )
             self.conn.commit()
             return True, "注册成功"
@@ -186,10 +202,10 @@ class Database:
 
     def get_all_users(self):
         c = self.conn.cursor()
-        c.execute("SELECT id, username, role, email FROM users ORDER BY id ASC")
+        c.execute("SELECT id, username, role, email, receive_email FROM users ORDER BY id ASC")
         return c.fetchall()
 
-    def update_user(self, user_id, username, role, new_password=None, email=""):
+    def update_user(self, user_id, username, role, new_password=None, email="", receive_email=None):
         c = self.conn.cursor()
         # 检查是否存在
         c.execute("SELECT * FROM users WHERE id=?", (user_id,))
@@ -203,23 +219,27 @@ class Database:
             if c.fetchone()["cnt"] <= 1:
                 raise RuntimeError("至少需要保留一个管理员账号")
 
+        # 如果没有指定receive_email，保持原值
+        if receive_email is None:
+            receive_email = row["receive_email"] if "receive_email" in row.keys() else 1
+
         if new_password:
             c.execute(
                 """
                 UPDATE users
-                SET username=?, role=?, password_hash=?, email=?
+                SET username=?, role=?, password_hash=?, email=?, receive_email=?
                 WHERE id=?
                 """,
-                (username, role, hash_password(new_password), email, user_id),
+                (username, role, hash_password(new_password), email, receive_email, user_id),
             )
         else:
             c.execute(
                 """
                 UPDATE users
-                SET username=?, role=?, email=?
+                SET username=?, role=?, email=?, receive_email=?
                 WHERE id=?
                 """,
-                (username, role, email, user_id),
+                (username, role, email, receive_email, user_id),
             )
         self.conn.commit()
 
@@ -319,6 +339,11 @@ class Database:
         c.execute("DELETE FROM people WHERE id=?", (person_id,))
         self.conn.commit()
 
+    def delete_all_people(self):
+        c = self.conn.cursor()
+        c.execute("DELETE FROM people")
+        self.conn.commit()
+
     def update_person(self, person_id, name, phone, unit=""):
         c = self.conn.cursor()
         c.execute(
@@ -341,7 +366,7 @@ class Database:
     def create_session(self, title):
         c = self.conn.cursor()
         c.execute(
-            "INSERT INTO sessions (title,created_at) VALUES (?,?)",
+            "INSERT INTO sessions (title,created_at,completed) VALUES (?,?,0)",
             (
                 title,
                 datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
@@ -349,6 +374,26 @@ class Database:
         )
         self.conn.commit()
         return c.lastrowid
+
+    def complete_session(self, session_id):
+        """标记会话为已完成"""
+        c = self.conn.cursor()
+        c.execute(
+            "UPDATE sessions SET completed=1 WHERE id=?",
+            (session_id,),
+        )
+        self.conn.commit()
+
+    def delete_incomplete_sessions(self):
+        """删除所有未完成的会话及其日志"""
+        c = self.conn.cursor()
+        # 先删除未完成会话的日志
+        c.execute(
+            "DELETE FROM draw_logs WHERE session_id IN (SELECT id FROM sessions WHERE completed=0)"
+        )
+        # 再删除未完成的会话
+        c.execute("DELETE FROM sessions WHERE completed=0")
+        self.conn.commit()
 
     def add_draw_log(self, session_id, person_id, order_no, present, absent_reason):
         c = self.conn.cursor()
@@ -371,7 +416,7 @@ class Database:
 
     def get_sessions(self):
         c = self.conn.cursor()
-        c.execute("SELECT * FROM sessions ORDER BY id DESC")
+        c.execute("SELECT * FROM sessions WHERE completed=1 ORDER BY id DESC")
         return c.fetchall()
 
     def get_session_logs(self, session_id):
@@ -390,15 +435,10 @@ class Database:
         return c.fetchall()
 
     def get_completed_sessions(self):
-        """返回已完成抽签（有 3 人到场）的论政项目"""
-        sessions = self.get_sessions()
-        result = []
-        for s in sessions:
-            logs = self.get_session_logs(s["id"])
-            present_count = sum(1 for r in logs if r["present"] == 1)
-            if present_count == 3:
-                result.append(s)
-        return result
+        """返回已完成抽签的论政项目"""
+        c = self.conn.cursor()
+        c.execute("SELECT * FROM sessions WHERE completed=1 ORDER BY id DESC")
+        return c.fetchall()
 
     def get_present_logs(self, session_id):
         """返回某论政项目中所有到场的抽签记录（用于补抽时选择标记不到场）"""
@@ -534,11 +574,21 @@ class Database:
         self.conn.commit()
 
     def get_admin_emails(self):
+        """获取允许接收邮件的管理员邮箱列表"""
         c = self.conn.cursor()
         c.execute(
-            "SELECT email FROM users WHERE role='admin' AND email IS NOT NULL AND email<>''"
+            "SELECT email FROM users WHERE role='admin' AND email IS NOT NULL AND email<>'' AND receive_email=1"
         )
         return [r["email"] for r in c.fetchall()]
+
+    def set_user_receive_email(self, user_id, receive_email):
+        """设置用户是否接收邮件通知"""
+        c = self.conn.cursor()
+        c.execute(
+            "UPDATE users SET receive_email=? WHERE id=?",
+            (1 if receive_email else 0, user_id),
+        )
+        self.conn.commit()
 
     # Excel IO - 日志
     def export_logs_to_excel(self, path):
@@ -651,7 +701,7 @@ class LoginFrame(ttk.Frame):
 
         ttk.Label(
             container,
-            text="默认管理员账号: admin / admin123",
+            text="Copyright © 2026 杜凌轩",
             foreground="gray",
         ).grid(row=4, column=0, columnspan=2, pady=(20, 0))
 
@@ -945,13 +995,100 @@ class PeopleFrame(ttk.Frame):
         if openpyxl is None:
             messagebox.showerror("错误", "请先安装 openpyxl 库")
             return
+        
+        # 创建自定义对话框
+        dialog = tk.Toplevel(self)
+        dialog.title("导入选项")
+        dialog.geometry("380x280")
+        dialog.resizable(False, False)
+        
+        # 居中显示
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        
+        # 添加标签
+        label = ttk.Label(dialog, text="请选择导入方式：", font=("SimHei", 11))
+        label.pack(pady=15)
+        
+        # 存储用户选择
+        self.import_option = None
+        
+        # 处理右上角关闭按钮
+        def on_close():
+            self.import_option = "cancel"
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+        
+        # 创建按钮框架
+        button_frame = ttk.Frame(dialog)
+        button_frame.pack(expand=True, fill="both", padx=30)
+        
+        # 删除当前名库重新导入按钮
+        def delete_and_import():
+            self.import_option = "delete"
+            dialog.destroy()
+        
+        btn_delete = ttk.Button(
+            button_frame, 
+            text="删除当前名库重新导入", 
+            command=delete_and_import,
+            width=22
+        )
+        btn_delete.pack(pady=10, fill="x")
+        
+        # 保留当前名库继续导入按钮
+        def keep_and_import():
+            self.import_option = "keep"
+            dialog.destroy()
+        
+        btn_keep = ttk.Button(
+            button_frame, 
+            text="保留当前名库继续导入", 
+            command=keep_and_import,
+            width=22
+        )
+        btn_keep.pack(pady=10, fill="x")
+        
+        # 取消按钮
+        def cancel_import():
+            self.import_option = "cancel"
+            dialog.destroy()
+        
+        btn_cancel = ttk.Button(
+            button_frame, 
+            text="取消", 
+            command=cancel_import,
+            width=22
+        )
+        btn_cancel.pack(pady=10, fill="x")
+        
+        # 等待用户选择
+        dialog.transient(self)
+        dialog.grab_set()
+        self.wait_window(dialog)
+        
+        # 根据用户选择执行操作
+        if self.import_option != "delete" and self.import_option != "keep":
+            return
+        
+        # 选择Excel文件
         path = filedialog.askopenfilename(
             title="选择 Excel 文件",
             filetypes=[("Excel 文件", "*.xlsx *.xlsm *.xltx *.xltm")],
         )
         if not path:
             return
+        
         try:
+            if self.import_option == "delete":
+                # 删除当前名库
+                self.app.db.delete_all_people()
+            
             self.app.db.import_people_from_excel(path)
             self.refresh()
             messagebox.showinfo("成功", "导入完成")
@@ -1207,14 +1344,78 @@ class DrawFrame(ttk.Frame):
         self._show_view("choice")
 
     def _show_new_draw(self):
+        # 弹出对话框让用户输入项目名称
+        dialog = tk.Toplevel(self)
+        dialog.title("新建论政项目")
+        dialog.geometry("450x200")
+        dialog.resizable(False, False)
+        
+        # 居中显示
+        dialog.update_idletasks()
+        width = dialog.winfo_width()
+        height = dialog.winfo_height()
+        x = (dialog.winfo_screenwidth() // 2) - (width // 2)
+        y = (dialog.winfo_screenheight() // 2) - (height // 2)
+        dialog.geometry(f"{width}x{height}+{x}+{y}")
+        
+        # 存储用户输入
+        self.new_project_name = None
+        
+        # 处理右上角关闭按钮
+        def on_close():
+            self.new_project_name = None
+            dialog.destroy()
+        
+        dialog.protocol("WM_DELETE_WINDOW", on_close)
+        
+        # 标签
+        ttk.Label(dialog, text="请输入论政项目名称：", font=("SimHei", 11)).pack(pady=15)
+        
+        # 输入框
+        name_var = tk.StringVar()
+        entry = ttk.Entry(dialog, textvariable=name_var, width=40)
+        entry.pack(pady=5, padx=30)
+        entry.focus_set()
+        
+        # 按钮框架
+        btn_frame = ttk.Frame(dialog)
+        btn_frame.pack(pady=15)
+        
+        def on_confirm():
+            self.new_project_name = name_var.get().strip() or "未命名论政项目"
+            dialog.destroy()
+        
+        def on_cancel():
+            self.new_project_name = None
+            dialog.destroy()
+        
+        ttk.Button(btn_frame, text="确定", command=on_confirm, width=12).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="取消", command=on_cancel, width=12).pack(side="left", padx=10)
+        
+        # 回车键确认
+        entry.bind("<Return>", lambda e: on_confirm())
+        
+        # 等待用户操作
+        dialog.transient(self)
+        dialog.grab_set()
+        self.wait_window(dialog)
+        
+        # 用户取消
+        if self.new_project_name is None:
+            return
+        
+        # 显示抽签界面
         self._show_view("new")
-        self.title_var.set("")
+        self.title_var.set(self.new_project_name)
         self.status_var.set("尚未开始")
         self.present_var.set("0 / 3")
         self.name_var.set("")
         self.phone_var.set("")
         self.set_buttons_state(started=False)
         self.current_session_id = None
+        
+        # 自动开始新抽签
+        self._auto_start_session()
 
     def _show_supplement_select(self):
         self._show_view("supplement")
@@ -1225,74 +1426,53 @@ class DrawFrame(ttk.Frame):
 
     def _build_new_draw_ui(self):
         outer = self.new_draw_frame
-        top = ttk.Frame(outer)
-        top.pack(fill="x", pady=(0, 15))
-
-        ttk.Label(top, text="新论政项目抽签", font=SUBTITLE_FONT).pack(
-            side="left", padx=8
-        )
-
-        ttk.Button(top, text="返回", command=self._show_choice, width=10).pack(
-            side="right", padx=5
-        )
-        ttk.Button(top, text="开始新抽签", command=self.start_new_session, width=14).pack(
-            side="right", padx=8
-        )
-
-        middle = ttk.Frame(outer)
-        middle.pack(pady=15)
-
-        middle.columnconfigure(0, weight=1)
-        middle.columnconfigure(1, weight=1)
-
-        ttk.Label(middle, text="论政项目名称:").grid(
-            row=0, column=0, sticky="e", padx=20, pady=10
-        )
+        
+        # 信息区域（居中显示）
+        info_frame = ttk.Frame(outer)
+        info_frame.pack(pady=30)
+        
+        # 论政项目名称（固定显示）
         self.title_var = tk.StringVar()
-        ttk.Entry(middle, textvariable=self.title_var, width=40).grid(
-            row=0, column=1, sticky="w", padx=20, pady=10
-        )
-
-        ttk.Label(middle, text="当前状态:").grid(
-            row=1, column=0, sticky="e", padx=20, pady=10
-        )
+        ttk.Label(info_frame, text="论政项目名称：", font=("SimHei", 12)).pack()
+        self.title_label = ttk.Label(info_frame, textvariable=self.title_var, font=("SimHei", 14, "bold"))
+        self.title_label.pack(pady=(0, 15))
+        
+        # 当前状态
+        ttk.Label(info_frame, text="当前状态：", font=("SimHei", 12)).pack()
         self.status_var = tk.StringVar(value="尚未开始")
-        ttk.Label(middle, textvariable=self.status_var).grid(
-            row=1, column=1, sticky="w", padx=20, pady=10
-        )
-
-        ttk.Label(middle, text="已到场人数:").grid(
-            row=2, column=0, sticky="e", padx=20, pady=10
-        )
+        ttk.Label(info_frame, textvariable=self.status_var, font=("SimHei", 12)).pack(pady=(0, 15))
+        
+        # 已到场人数
+        ttk.Label(info_frame, text="已到场人数：", font=("SimHei", 12)).pack()
         self.present_var = tk.StringVar(value="0 / 3")
-        ttk.Label(middle, textvariable=self.present_var).grid(
-            row=2, column=1, sticky="w", padx=20, pady=10
-        )
+        ttk.Label(info_frame, textvariable=self.present_var, font=("SimHei", 12)).pack(pady=(0, 15))
 
         ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=8)
 
-        info = ttk.Frame(outer)
-        info.pack(pady=20)
+        # 抽中人员信息
+        person_frame = ttk.Frame(outer)
+        person_frame.pack(pady=20)
 
-        info.columnconfigure(0, weight=1)
-        info.columnconfigure(1, weight=1)
+        person_frame.columnconfigure(0, weight=1)
+        person_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(info, text="抽中人员姓名:").grid(
+        ttk.Label(person_frame, text="抽中人员姓名:").grid(
             row=0, column=0, sticky="e", padx=20, pady=10
         )
         self.name_var = tk.StringVar()
-        ttk.Label(info, textvariable=self.name_var, font=("Microsoft YaHei", 15)).grid(
+        ttk.Label(person_frame, textvariable=self.name_var, font=("Microsoft YaHei", 15)).grid(
             row=0, column=1, sticky="w", padx=20, pady=10
         )
 
-        ttk.Label(info, text="手机号:").grid(
+        ttk.Label(person_frame, text="手机号:").grid(
             row=1, column=0, sticky="e", padx=20, pady=10
         )
         self.phone_var = tk.StringVar()
-        ttk.Label(info, textvariable=self.phone_var).grid(
+        ttk.Label(person_frame, textvariable=self.phone_var).grid(
             row=1, column=1, sticky="w", padx=20, pady=10
         )
 
+        # 按钮区域
         btns = ttk.Frame(outer)
         btns.pack(pady=20)
 
@@ -1304,11 +1484,13 @@ class DrawFrame(ttk.Frame):
         self.btn_absent = ttk.Button(
             btns, text="不到场", command=lambda: self.mark_result(False), width=12
         )
+        self.btn_cancel = ttk.Button(btns, text="取消", command=self._cancel_draw, width=12)
 
-        self.btn_draw.grid(row=0, column=0, padx=15)
-        self.btn_stop.grid(row=0, column=0, padx=15)
-        self.btn_present.grid(row=0, column=0, padx=15)
-        self.btn_absent.grid(row=0, column=1, padx=15)
+        self.btn_draw.grid(row=0, column=0, padx=10)
+        self.btn_stop.grid(row=0, column=0, padx=10)
+        self.btn_present.grid(row=0, column=0, padx=10)
+        self.btn_absent.grid(row=0, column=1, padx=10)
+        self.btn_cancel.grid(row=0, column=2, padx=10)
 
         ttk.Label(
             outer,
@@ -1555,6 +1737,8 @@ class DrawFrame(ttk.Frame):
         self.supp_btn_stop.grid_remove()
         self.supp_btn_present.grid()
         self.supp_btn_absent.grid()
+        self.supp_btn_present["state"] = "normal"
+        self.supp_btn_absent["state"] = "normal"
 
     def _supplement_mark_result(self, present: bool):
         if self.supp_current_person is None:
@@ -1600,13 +1784,46 @@ class DrawFrame(ttk.Frame):
         if not started:
             self.btn_draw["state"] = "disabled"
             self.btn_draw.grid()
+            self.btn_cancel.grid()
         else:
             self.btn_draw["state"] = "normal"
             self.btn_draw.grid()
+            self.btn_cancel.grid()
+
+    def _auto_start_session(self):
+        """自动开始新抽签会话"""
+        people = self.app.db.get_available_people()
+        if not people:
+            messagebox.showwarning("提示", "当前无可用专家（可能全部被屏蔽），请先在专家名库中添加人员或取消屏蔽")
+            self._show_choice()
+            return
+
+        sid = self.app.db.create_session(self.title_var.get())
+        self.current_session_id = sid
+        self.present_count = 0
+        self.order_no = 0
+        self.current_person = None
+        self.people_cache = list(people)
+        self.status_var.set(f"正在进行会话 ID: {sid}")
+        self.present_var.set("0 / 3")
+        self.name_var.set("")
+        self.phone_var.set("")
+        self.set_buttons_state(started=True)
+
+    def _cancel_draw(self):
+        """取消当前抽签，返回选择界面"""
+        if messagebox.askyesno("确认", "确定要取消当前抽签吗？"):
+            # 删除未完成的会话及其日志
+            if self.current_session_id:
+                c = self.app.db.conn.cursor()
+                c.execute("DELETE FROM draw_logs WHERE session_id=?", (self.current_session_id,))
+                c.execute("DELETE FROM sessions WHERE id=?", (self.current_session_id,))
+                self.app.db.conn.commit()
+            self._show_choice()
 
     def start_draw_animation(self):
         if self.current_session_id is None:
-            messagebox.showwarning("提示", "请先点击\"开始新抽签\"")
+            messagebox.showwarning("提示", "抽签会话未正确初始化")
             return
         if self.present_count >= 3:
             messagebox.showinfo("提示", "本次抽签已完成 3 名到场人员")
@@ -1645,29 +1862,6 @@ class DrawFrame(ttk.Frame):
         self.btn_present.grid()
         self.btn_absent.grid()
 
-    def start_new_session(self):
-        title = self.title_var.get().strip()
-        if not title:
-            if not messagebox.askyesno("提示", "未填写论政项目名称，是否继续？"):
-                return
-        people = self.app.db.get_available_people()
-        if not people:
-            messagebox.showwarning("提示", "当前无可用专家（可能全部被屏蔽），请先在专家名库中添加人员或取消屏蔽")
-            return
-
-        sid = self.app.db.create_session(title or "未命名论政项目")
-        self.current_session_id = sid
-        self.present_count = 0
-        self.order_no = 0
-        self.current_person = None
-        self.people_cache = list(people)
-        self.status_var.set(f"正在进行会话 ID: {sid}")
-        self.present_var.set("0 / 3")
-        self.name_var.set("")
-        self.phone_var.set("")
-        self.set_buttons_state(started=True)
-        messagebox.showinfo("提示", "已开始新的抽签会话，可点击\"抽签\"")
-
     def mark_result(self, present: bool):
         if self.current_person is None:
             messagebox.showwarning("提示", "请先抽签")
@@ -1702,8 +1896,12 @@ class DrawFrame(ttk.Frame):
             self.status_var.set(
                 f"会话 ID {self.current_session_id} 已完成 (3 人到场)"
             )
+            # 标记会话为已完成
+            self.app.db.complete_session(self.current_session_id)
             messagebox.showinfo("完成", "本次抽签流程已完成 3 名到场人员")
             self.app.send_sessions_email(self, [self.current_session_id])
+            # 抽签完成后自动返回抽签功能界面
+            self._show_choice()
         else:
             self.status_var.set(
                 f"会话 ID {self.current_session_id} 进行中，已到场 {self.present_count} 人"
@@ -1750,7 +1948,7 @@ class DrawFrame(ttk.Frame):
 
 
 class UsersFrame(ttk.Frame):
-    """账号管理：仅管理员使用"""
+    """账户管理：仅管理员使用"""
 
     def __init__(self, master, app):
         super().__init__(master)
@@ -1765,7 +1963,7 @@ class UsersFrame(ttk.Frame):
         top = ttk.Frame(outer)
         top.pack(fill="x", pady=(0, 15))
 
-        ttk.Label(top, text="账号管理（仅管理员）", font=SUBTITLE_FONT).pack(
+        ttk.Label(top, text="账户管理（仅管理员）", font=SUBTITLE_FONT).pack(
             side="left", padx=8
         )
 
@@ -1773,20 +1971,14 @@ class UsersFrame(ttk.Frame):
         btn_bar = ttk.Frame(outer)
         btn_bar.pack(pady=15)
 
-        self.btn_add = ttk.Button(btn_bar, text="新增账号", command=self.add_user, width=10)
-        self.btn_edit = ttk.Button(btn_bar, text="编辑账号", command=self.edit_user, width=10)
-        self.btn_del = ttk.Button(btn_bar, text="删除账号", command=self.delete_user, width=10)
+        self.btn_add = ttk.Button(btn_bar, text="新增账户", command=self.add_user, width=10)
+        self.btn_edit = ttk.Button(btn_bar, text="编辑账户", command=self.edit_user, width=10)
+        self.btn_del = ttk.Button(btn_bar, text="删除账户", command=self.delete_user, width=10)
         self.btn_set_admin = ttk.Button(
             btn_bar, text="设为管理员", command=lambda: self.change_role("admin"), width=11
         )
         self.btn_set_user = ttk.Button(
             btn_bar, text="设为普通用户", command=lambda: self.change_role("user"), width=12
-        )
-        self.btn_import = ttk.Button(
-            btn_bar, text="从Excel导入", command=self.import_excel, width=11
-        )
-        self.btn_export = ttk.Button(
-            btn_bar, text="导出至Excel", command=self.export_excel, width=11
         )
 
         for b in (
@@ -1795,15 +1987,13 @@ class UsersFrame(ttk.Frame):
                 self.btn_del,
                 self.btn_set_admin,
                 self.btn_set_user,
-                self.btn_import,
-                self.btn_export,
         ):
             b.pack(side="left", padx=6)
 
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill="both", expand=True)
 
-        columns = ("id", "username", "email", "role")
+        columns = ("id", "username", "email", "role", "receive_email")
         self.tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -1815,11 +2005,13 @@ class UsersFrame(ttk.Frame):
         self.tree.heading("username", text="用户名")
         self.tree.heading("email", text="电子邮箱")
         self.tree.heading("role", text="角色")
+        self.tree.heading("receive_email", text="接收邮件通知")
 
         self.tree.column("id", width=0, minwidth=0, anchor="center", stretch=False)
-        self.tree.column("username", width=180, anchor="w", stretch=True)
-        self.tree.column("email", width=220, anchor="w", stretch=True)
-        self.tree.column("role", width=120, anchor="center", stretch=False)
+        self.tree.column("username", width=150, anchor="w", stretch=True)
+        self.tree.column("email", width=200, anchor="w", stretch=True)
+        self.tree.column("role", width=100, anchor="center", stretch=False)
+        self.tree.column("receive_email", width=100, anchor="center", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
 
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -1833,40 +2025,43 @@ class UsersFrame(ttk.Frame):
             self.tree.delete(i)
         for row in self.app.db.get_all_users():
             role_text = "管理员" if row["role"] == "admin" else "普通用户"
+            receive_text = "是" if (row["receive_email"] if "receive_email" in row.keys() else 1) else "否"
             self.tree.insert(
                 "",
                 "end",
-                values=(row["id"], row["username"], row["email"] or "", role_text),
+                values=(row["id"], row["username"], row["email"] or "", role_text, receive_text),
             )
 
     def _get_selected_id_role(self):
         sel = self.tree.selection()
         if not sel:
-            return None, None
+            return None, None, None
         values = self.tree.item(sel[0], "values")
         uid = int(values[0])
         role_text = values[3]
         role = "admin" if role_text == "管理员" else "user"
-        return uid, role
+        receive_email = values[4] == "是"
+        return uid, role, receive_email
 
     def add_user(self):
         self._edit_dialog()
 
     def edit_user(self):
-        uid, role = self._get_selected_id_role()
+        uid, role, receive_email = self._get_selected_id_role()
         if not uid:
-            messagebox.showwarning("提示", "请先选择一个账号")
+            messagebox.showwarning("提示", "请先选择一个账户")
             return
         # 从 db 获取该用户
         users = {u["id"]: u for u in self.app.db.get_all_users()}
         if uid not in users:
             return
         u = users[uid]
-        self._edit_dialog(uid, u["username"], u["role"])
+        receive_email = u["receive_email"] if "receive_email" in u.keys() else 1
+        self._edit_dialog(uid, u["username"], u["role"], u["email"] or "", receive_email)
 
-    def _edit_dialog(self, user_id=None, username="", role="user"):
+    def _edit_dialog(self, user_id=None, username="", role="user", email="", receive_email=1):
         dlg = tk.Toplevel(self)
-        dlg.title("账号信息")
+        dlg.title("账户信息")
         dlg.grab_set()
         dlg.resizable(False, False)
 
@@ -1897,8 +2092,7 @@ class UsersFrame(ttk.Frame):
         ttk.Label(container, text="电子邮箱:").grid(
             row=3, column=0, padx=8, pady=10, sticky="e"
         )
-        email_value = username if username and "@" in username else ""
-        email_var = tk.StringVar(value=email_value)
+        email_var = tk.StringVar(value=email)
         ttk.Entry(container, textvariable=email_var, width=28).grid(
             row=3, column=1, padx=8, pady=10, sticky="w"
         )
@@ -1916,36 +2110,45 @@ class UsersFrame(ttk.Frame):
         )
         cb.grid(row=4, column=1, padx=8, pady=10, sticky="w")
 
+        ttk.Label(container, text="邮件通知:").grid(
+            row=5, column=0, padx=8, pady=10, sticky="e"
+        )
+        receive_var = tk.BooleanVar(value=bool(receive_email))
+        ttk.Checkbutton(
+            container, text="允许接收邮件通知", variable=receive_var
+        ).grid(row=5, column=1, padx=8, pady=10, sticky="w")
+
         def on_ok():
             name = username_var.get().strip()
             pwd = pwd_var.get().strip()
-            email = email_var.get().strip()
+            email_val = email_var.get().strip()
             role_choice = "admin" if role_var.get() == "管理员" else "user"
+            receive_choice = 1 if receive_var.get() else 0
             if not name:
                 messagebox.showwarning("提示", "用户名不能为空")
                 return
             try:
                 if user_id is None:
-                    # 新增账号时密码必填
+                    # 新增账户时密码必填
                     if not pwd:
-                        messagebox.showwarning("提示", "新增账号时密码不能为空")
+                        messagebox.showwarning("提示", "新增账户时密码不能为空")
                         return
-                    ok, msg = self.app.db.register_user(name, pwd, role=role_choice, email=email)
+                    ok, msg = self.app.db.register_user(name, pwd, role=role_choice, email=email_val, receive_email=receive_choice)
                     if not ok:
                         messagebox.showerror("失败", msg)
                         return
                 else:
                     if pwd:
-                        self.app.db.update_user(user_id, name, role_choice, pwd, email=email)
+                        self.app.db.update_user(user_id, name, role_choice, pwd, email=email_val, receive_email=receive_choice)
                     else:
-                        self.app.db.update_user(user_id, name, role_choice, email=email)
+                        self.app.db.update_user(user_id, name, role_choice, email=email_val, receive_email=receive_choice)
                 self.refresh()
                 dlg.destroy()
             except Exception as e:
                 messagebox.showerror("错误", str(e))
 
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=5, column=0, columnspan=2, pady=(18, 0))
+        btn_frame.grid(row=6, column=0, columnspan=2, pady=(18, 0))
         ttk.Button(btn_frame, text="确定", command=on_ok, width=11).grid(
             row=0, column=0, padx=10
         )
@@ -1954,11 +2157,11 @@ class UsersFrame(ttk.Frame):
         )
 
     def delete_user(self):
-        uid, role = self._get_selected_id_role()
+        uid, role, receive_email = self._get_selected_id_role()
         if not uid:
-            messagebox.showwarning("提示", "请先选择一个账号")
+            messagebox.showwarning("提示", "请先选择一个账户")
             return
-        if not messagebox.askyesno("确认", "确定要删除该账号吗？"):
+        if not messagebox.askyesno("确认", "确定要删除该账户吗？"):
             return
         try:
             self.app.db.delete_user(uid, current_user_id=self.app.current_user["id"])
@@ -1967,9 +2170,9 @@ class UsersFrame(ttk.Frame):
             messagebox.showerror("错误", str(e))
 
     def change_role(self, new_role):
-        uid, _old_role = self._get_selected_id_role()
+        uid, _old_role, _receive_email = self._get_selected_id_role()
         if not uid:
-            messagebox.showwarning("提示", "请先选择一个账号")
+            messagebox.showwarning("提示", "请先选择一个账户")
             return
         users = {u["id"]: u for u in self.app.db.get_all_users()}
         if uid not in users:
@@ -1980,47 +2183,6 @@ class UsersFrame(ttk.Frame):
             self.refresh()
         except Exception as e:
             messagebox.showerror("错误", str(e))
-
-    def import_excel(self):
-        if openpyxl is None:
-            messagebox.showerror("错误", "请先安装 openpyxl 库")
-            return
-        path = filedialog.askopenfilename(
-            title="选择 Excel 文件",
-            filetypes=[("Excel 文件", "*.xlsx *.xlsm *.xltx *.xltm")],
-        )
-        if not path:
-            return
-        try:
-            self.app.db.import_users_from_excel(path)
-            self.refresh()
-            messagebox.showinfo(
-                "成功",
-                "导入完成。\n表头示例：用户名 | 密码(明文) | 角色(admin/user)，空密码则不重置。",
-            )
-        except Exception as e:
-            messagebox.showerror("错误", f"导入失败: {e}")
-
-    def export_excel(self):
-        if openpyxl is None:
-            messagebox.showerror("错误", "请先安装 openpyxl 库")
-            return
-        path = filedialog.asksaveasfilename(
-            defaultextension=".xlsx",
-            filetypes=[("Excel 文件", "*.xlsx")],
-            title="导出账号列表",
-            initialfile="users.xlsx",
-        )
-        if not path:
-            return
-        try:
-            self.app.db.export_users_to_excel(path)
-            messagebox.showinfo(
-                "成功",
-                "导出完成。\n注意：密码列为空，如需重置密码，可在 Excel 中填写后再导入。",
-            )
-        except Exception as e:
-            messagebox.showerror("错误", f"导出失败: {e}")
 
 
 class MailConfigFrame(ttk.Frame):
@@ -2157,7 +2319,10 @@ class MainFrame(ttk.Frame):
         self.notebook.add(self.people_frame, text="专家名库")
         self.notebook.add(self.draw_frame, text="抽签")
         self.notebook.add(self.logs_frame, text="日志")
-        # 账号管理 / 邮件设置 Tab 在管理员登录后动态添加
+        # 账户管理 / 邮件设置 Tab 在管理员登录后动态添加
+        
+        # 绑定 tab 切换事件，切换到日志界面时自动刷新
+        self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def refresh_user_info(self):
         u = self.app.current_user
@@ -2166,10 +2331,10 @@ class MainFrame(ttk.Frame):
             self.user_label.configure(text=text)
             self.people_frame.set_admin_mode(u["role"] == "admin")
 
-            # 管理员才显示账号管理 & 邮件设置 Tab
+            # 管理员才显示账户管理 & 邮件设置 Tab
             if u["role"] == "admin":
                 if not self.account_tab_added:
-                    self.notebook.add(self.account_frame, text="账号管理")
+                    self.notebook.add(self.account_frame, text="账户管理")
                     self.account_tab_added = True
                 if not self.mail_tab_added:
                     self.notebook.add(self.mail_frame, text="邮件设置")
@@ -2189,6 +2354,13 @@ class MainFrame(ttk.Frame):
             if self.mail_tab_added:
                 self.notebook.forget(self.mail_frame)
                 self.mail_tab_added = False
+
+    def _on_tab_changed(self, event):
+        """Tab 切换事件处理，切换到日志界面时自动刷新"""
+        current_tab = self.notebook.index(self.notebook.select())
+        # 日志界面是第3个tab（索引为2）
+        if current_tab == 2:
+            self.logs_frame.refresh_sessions()
 
     def logout(self):
         if messagebox.askyesno("确认", "确定要退出登录吗？"):
