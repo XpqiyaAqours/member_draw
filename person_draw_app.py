@@ -671,8 +671,9 @@ class LoginFrame(ttk.Frame):
 
         title = ttk.Label(
             container,
-            text="人员管理与抽签系统",
+            text="珠海安防协会项目论证\n专家抽签系统",
             font=TITLE_FONT,
+            justify="center",
         )
         title.grid(row=0, column=0, columnspan=2, pady=(0, 50))
 
@@ -2376,7 +2377,7 @@ class App(tk.Tk):
         super().__init__()
 
         # 初始窗口大小，允许缩放
-        self.title("人员管理与抽签系统")
+        self.title("珠海安防协会项目论证专家抽签系统")
         self.geometry("1400x900")
         self.minsize(1600, 900)
         self.resizable(True, True)
