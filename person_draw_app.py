@@ -18,7 +18,7 @@ except ImportError:
 
 # 全局字体配置
 BASE_FONT = ("Microsoft YaHei", 11)
-TITLE_FONT = ("Microsoft YaHei", 18, "bold")
+TITLE_FONT = ("Microsoft YaHei", 24, "bold")
 SUBTITLE_FONT = ("Microsoft YaHei", 13, "bold")
 
 
@@ -105,12 +105,18 @@ class Database:
         except sqlite3.OperationalError:
             pass
 
+        # 兼容老版本库，尝试补充 password_changed 字段
+        try:
+            c.execute("ALTER TABLE users ADD COLUMN password_changed INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
+
         # 若无用户则创建一个默认管理员
         c.execute("SELECT COUNT(*) AS cnt FROM users")
         if c.fetchone()["cnt"] == 0:
             c.execute(
-                "INSERT INTO users (username,password_hash,role,email) VALUES (?,?,?,?)",
-                ("admin", hash_password("admin123"), "admin", ""),
+                "INSERT INTO users (username,password_hash,role,email,receive_email) VALUES (?,?,?,?,?)",
+                ("admin", hash_password("admin"), "admin", "", 1),
             )
 
         # 专家名库表
@@ -342,6 +348,28 @@ class Database:
     def delete_all_people(self):
         c = self.conn.cursor()
         c.execute("DELETE FROM people")
+        self.conn.commit()
+
+    def delete_all_logs(self):
+        """清空所有抽签日志"""
+        c = self.conn.cursor()
+        c.execute("DELETE FROM draw_logs")
+        c.execute("DELETE FROM sessions")
+        self.conn.commit()
+
+    def reset_database(self):
+        """重置所有系统数据"""
+        c = self.conn.cursor()
+        # 清空所有数据表
+        c.execute("DELETE FROM draw_logs")
+        c.execute("DELETE FROM sessions")
+        c.execute("DELETE FROM people")
+        c.execute("DELETE FROM users")
+        # 重新创建默认管理员账户
+        c.execute(
+            "INSERT INTO users (username,password_hash,role,email,receive_email) VALUES (?,?,?,?,?)",
+            ("admin", hash_password("admin"), "admin", "", 1),
+        )
         self.conn.commit()
 
     def update_person(self, person_id, name, phone, unit=""):
@@ -669,42 +697,83 @@ class LoginFrame(ttk.Frame):
         container.columnconfigure(0, weight=1)
         container.columnconfigure(1, weight=1)
 
+        # Logo图片
+        try:
+            logo_path = os.path.join(os.path.dirname(__file__), "珠海安防协会logo.gif")
+            if os.path.exists(logo_path):
+                logo_img = tk.PhotoImage(file=logo_path)
+                logo_img = logo_img.subsample(6, 6)  # 缩小到1/6
+                logo_label = ttk.Label(container, image=logo_img)
+                logo_label.image = logo_img
+                logo_label.grid(row=0, column=0, columnspan=2, pady=(0, 20))
+        except Exception:
+            pass
+
         title = ttk.Label(
             container,
             text="珠海安防协会项目论证\n专家抽签系统",
             font=TITLE_FONT,
             justify="center",
         )
-        title.grid(row=0, column=0, columnspan=2, pady=(0, 50))
+        title.grid(row=1, column=0, columnspan=2, pady=(0, 50))
 
         ttk.Label(container, text="用户名:").grid(
-            row=1, column=0, sticky="e", padx=20, pady=12
+            row=2, column=0, sticky="e", padx=20, pady=12
         )
         self.username_var = tk.StringVar()
         ttk.Entry(container, textvariable=self.username_var, width=28).grid(
-            row=1, column=1, sticky="w", padx=20, pady=12
-        )
-
-        ttk.Label(container, text="密码:").grid(
-            row=2, column=0, sticky="e", padx=20, pady=12
-        )
-        self.password_var = tk.StringVar()
-        ttk.Entry(container, textvariable=self.password_var, show="*", width=28).grid(
             row=2, column=1, sticky="w", padx=20, pady=12
         )
 
+        ttk.Label(container, text="密码:").grid(
+            row=3, column=0, sticky="e", padx=20, pady=12
+        )
+        self.password_var = tk.StringVar()
+        self.pwd_entry = ttk.Entry(container, textvariable=self.password_var, show="*", width=28)
+        self.pwd_entry.grid(
+            row=3, column=1, sticky="w", padx=20, pady=12
+        )
+        
+        # 显示密码复选框
+        self.show_pwd_var = tk.BooleanVar(value=False)
+        ttk.Checkbutton(
+            container, text="显示密码", variable=self.show_pwd_var, 
+            command=self._toggle_password_visibility
+        ).grid(row=4, column=1, sticky="w", padx=20, pady=5)
+
+
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=3, column=0, columnspan=2, pady=30)
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=20)
 
         ttk.Button(btn_frame, text="登录", command=self.login, width=14).grid(
             row=0, column=0, padx=15
+        )
+        
+        # 重置系统按钮（临时测试）
+        ttk.Button(btn_frame, text="重置系统（临时测试）", command=self._reset_system, width=16).grid(
+            row=1, column=0, padx=15, pady=(10, 0)
         )
 
         ttk.Label(
             container,
             text="Copyright © 2026 杜凌轩",
             foreground="gray",
-        ).grid(row=4, column=0, columnspan=2, pady=(20, 0))
+        ).grid(row=6, column=0, columnspan=2, pady=(20, 0))
+
+    def _toggle_password_visibility(self):
+        """切换密码显示/隐藏"""
+        if self.show_pwd_var.get():
+            self.pwd_entry.config(show="")
+        else:
+            self.pwd_entry.config(show="*")
+
+    def _reset_system(self):
+        """重置系统（临时测试功能）"""
+        if messagebox.askyesno("确认", "确定要重置整个系统吗？\n\n这将删除所有数据并恢复默认设置。\n此操作不可恢复！"):
+            self.app.db.reset_database()
+            messagebox.showinfo("成功", "系统已重置")
+            self.username_var.set("")
+            self.password_var.set("")
 
     def login(self):
         username = self.username_var.get().strip()
@@ -1345,10 +1414,10 @@ class DrawFrame(ttk.Frame):
         self._show_view("choice")
 
     def _show_new_draw(self):
-        # 弹出对话框让用户输入项目名称
+        # 弹出对话框让用户输入项目名称和申请论证单位
         dialog = tk.Toplevel(self)
         dialog.title("新建论政项目")
-        dialog.geometry("450x200")
+        dialog.geometry("450x280")
         dialog.resizable(False, False)
         
         # 居中显示
@@ -1361,40 +1430,49 @@ class DrawFrame(ttk.Frame):
         
         # 存储用户输入
         self.new_project_name = None
+        self.new_project_unit = None
         
         # 处理右上角关闭按钮
         def on_close():
             self.new_project_name = None
+            self.new_project_unit = None
             dialog.destroy()
         
         dialog.protocol("WM_DELETE_WINDOW", on_close)
         
-        # 标签
-        ttk.Label(dialog, text="请输入论政项目名称：", font=("SimHei", 11)).pack(pady=15)
-        
-        # 输入框
+        # 论政项目名称
+        ttk.Label(dialog, text="请输入论政项目名称：", font=("SimHei", 11)).pack(pady=(15, 5))
         name_var = tk.StringVar()
-        entry = ttk.Entry(dialog, textvariable=name_var, width=40)
-        entry.pack(pady=5, padx=30)
-        entry.focus_set()
+        entry_name = ttk.Entry(dialog, textvariable=name_var, width=40)
+        entry_name.pack(pady=5, padx=30)
+        entry_name.focus_set()
+        
+        # 申请论证单位
+        ttk.Label(dialog, text="请输入申请论证单位：", font=("SimHei", 11)).pack(pady=(10, 5))
+        unit_var = tk.StringVar()
+        entry_unit = ttk.Entry(dialog, textvariable=unit_var, width=40)
+        entry_unit.pack(pady=5, padx=30)
         
         # 按钮框架
         btn_frame = ttk.Frame(dialog)
-        btn_frame.pack(pady=15)
+        btn_frame.pack(pady=20)
         
         def on_confirm():
             self.new_project_name = name_var.get().strip() or "未命名论政项目"
+            self.new_project_unit = unit_var.get().strip() or "未指定单位"
             dialog.destroy()
         
         def on_cancel():
             self.new_project_name = None
+            self.new_project_unit = None
             dialog.destroy()
         
         ttk.Button(btn_frame, text="确定", command=on_confirm, width=12).pack(side="left", padx=10)
         ttk.Button(btn_frame, text="取消", command=on_cancel, width=12).pack(side="left", padx=10)
         
         # 回车键确认
-        entry.bind("<Return>", lambda e: on_confirm())
+        entry_name.bind("<Return>", lambda e: entry_unit.focus_set())
+        entry_unit.bind("<Return>", lambda e: on_confirm())
         
         # 等待用户操作
         dialog.transient(self)
@@ -1408,10 +1486,11 @@ class DrawFrame(ttk.Frame):
         # 显示抽签界面
         self._show_view("new")
         self.title_var.set(self.new_project_name)
-        self.status_var.set("尚未开始")
+        self.unit_var.set(self.new_project_unit)
         self.present_var.set("0 / 3")
         self.name_var.set("")
         self.phone_var.set("")
+        self.unit_display_var.set("")
         self.set_buttons_state(started=False)
         self.current_session_id = None
         
@@ -1438,10 +1517,10 @@ class DrawFrame(ttk.Frame):
         self.title_label = ttk.Label(info_frame, textvariable=self.title_var, font=("SimHei", 14, "bold"))
         self.title_label.pack(pady=(0, 15))
         
-        # 当前状态
-        ttk.Label(info_frame, text="当前状态：", font=("SimHei", 12)).pack()
-        self.status_var = tk.StringVar(value="尚未开始")
-        ttk.Label(info_frame, textvariable=self.status_var, font=("SimHei", 12)).pack(pady=(0, 15))
+        # 申请论证单位
+        ttk.Label(info_frame, text="申请论证单位：", font=("SimHei", 12)).pack()
+        self.unit_var = tk.StringVar()
+        ttk.Label(info_frame, textvariable=self.unit_var, font=("SimHei", 12)).pack(pady=(0, 15))
         
         # 已到场人数
         ttk.Label(info_frame, text="已到场人数：", font=("SimHei", 12)).pack()
@@ -1471,6 +1550,14 @@ class DrawFrame(ttk.Frame):
         self.phone_var = tk.StringVar()
         ttk.Label(person_frame, textvariable=self.phone_var).grid(
             row=1, column=1, sticky="w", padx=20, pady=10
+        )
+        
+        ttk.Label(person_frame, text="单位:").grid(
+            row=2, column=0, sticky="e", padx=20, pady=10
+        )
+        self.unit_display_var = tk.StringVar()
+        ttk.Label(person_frame, textvariable=self.unit_display_var).grid(
+            row=2, column=1, sticky="w", padx=20, pady=10
         )
 
         # 按钮区域
@@ -1805,10 +1892,10 @@ class DrawFrame(ttk.Frame):
         self.order_no = 0
         self.current_person = None
         self.people_cache = list(people)
-        self.status_var.set(f"正在进行会话 ID: {sid}")
         self.present_var.set("0 / 3")
         self.name_var.set("")
         self.phone_var.set("")
+        self.unit_display_var.set("")
         self.set_buttons_state(started=True)
 
     def _cancel_draw(self):
@@ -1844,6 +1931,12 @@ class DrawFrame(ttk.Frame):
         person = random.choice(self.people_cache)
         self.name_var.set(person["name"])
         self.phone_var.set(person["phone"])
+        # 显示单位信息
+        try:
+            unit_value = person["unit"] if "unit" in person.keys() else ""
+        except (KeyError, TypeError):
+            unit_value = ""
+        self.unit_display_var.set(unit_value)
         self.draw_animation_id = self.after(50, self._animate_draw)
 
     def stop_draw_animation(self):
@@ -1858,6 +1951,12 @@ class DrawFrame(ttk.Frame):
         self.order_no += 1
         self.name_var.set(self.current_person["name"])
         self.phone_var.set(self.current_person["phone"])
+        # 获取单位信息，兼容sqlite3.Row对象
+        try:
+            unit_value = self.current_person["unit"] if "unit" in self.current_person.keys() else ""
+        except (KeyError, TypeError):
+            unit_value = ""
+        self.unit_display_var.set(unit_value)
 
         self.btn_stop.grid_remove()
         self.btn_present.grid()
@@ -1888,25 +1987,19 @@ class DrawFrame(ttk.Frame):
         self.current_person = None
         self.name_var.set("")
         self.phone_var.set("")
+        self.unit_display_var.set("")
         self.btn_present.grid_remove()
         self.btn_absent.grid_remove()
         self.btn_draw.grid()
 
         if self.present_count >= 3:
             self.btn_draw["state"] = "disabled"
-            self.status_var.set(
-                f"会话 ID {self.current_session_id} 已完成 (3 人到场)"
-            )
             # 标记会话为已完成
             self.app.db.complete_session(self.current_session_id)
             messagebox.showinfo("完成", "本次抽签流程已完成 3 名到场人员")
             self.app.send_sessions_email(self, [self.current_session_id])
             # 抽签完成后自动返回抽签功能界面
             self._show_choice()
-        else:
-            self.status_var.set(
-                f"会话 ID {self.current_session_id} 进行中，已到场 {self.present_count} 人"
-            )
 
     def _ask_reason(self):
         dlg = tk.Toplevel(self)
@@ -2187,7 +2280,7 @@ class UsersFrame(ttk.Frame):
 
 
 class MailConfigFrame(ttk.Frame):
-    """邮件设置（仅管理员）"""
+    """设置（仅管理员）"""
 
     def __init__(self, master, app):
         super().__init__(master)
@@ -2199,11 +2292,15 @@ class MailConfigFrame(ttk.Frame):
         outer = ttk.Frame(self, padding=30)
         outer.pack(fill="both", expand=True)
 
-        ttk.Label(outer, text="邮件设置（仅管理员）", font=SUBTITLE_FONT).pack(
+        ttk.Label(outer, text="设置（仅管理员）", font=SUBTITLE_FONT).pack(
             anchor="w", padx=5, pady=(0, 15)
         )
+        
+        # 邮件设置区域
+        mail_frame = ttk.LabelFrame(outer, text="邮件设置", padding=15)
+        mail_frame.pack(fill="x", pady=(0, 10), padx=10)
 
-        form = ttk.Frame(outer)
+        form = ttk.Frame(mail_frame)
         form.pack(pady=10, padx=10, anchor="center")
 
         for i in range(2):
@@ -2242,7 +2339,7 @@ class MailConfigFrame(ttk.Frame):
         self.use_ssl_var = tk.BooleanVar(value=True)
         self.use_tls_var = tk.BooleanVar(value=False)
 
-        ssl_frame = ttk.Frame(outer)
+        ssl_frame = ttk.Frame(mail_frame)
         ssl_frame.pack(pady=5)
         ttk.Checkbutton(
             ssl_frame, text="使用 SSL", variable=self.use_ssl_var
@@ -2251,11 +2348,50 @@ class MailConfigFrame(ttk.Frame):
             ssl_frame, text="使用 STARTTLS", variable=self.use_tls_var
         ).pack(side="left", padx=10)
 
-        btn_frame = ttk.Frame(outer)
-        btn_frame.pack(pady=20)
+        btn_frame = ttk.Frame(mail_frame)
+        btn_frame.pack(pady=10)
         ttk.Button(btn_frame, text="保存配置", command=self.save_config, width=12).pack(
             side="left", padx=10
         )
+        
+        # 重置设置区域
+        reset_frame = ttk.LabelFrame(outer, text="重置设置", padding=15)
+        reset_frame.pack(fill="x", pady=10, padx=10)
+        
+        # 清空专家名库
+        row1 = ttk.Frame(reset_frame)
+        row1.pack(fill="x", pady=5)
+        ttk.Label(row1, text="清空当前专家名库：").pack(side="left", padx=10)
+        ttk.Button(row1, text="清空名库", command=self._clear_people, width=12).pack(side="right", padx=10)
+        
+        # 清空所有抽签日志
+        row2 = ttk.Frame(reset_frame)
+        row2.pack(fill="x", pady=5)
+        ttk.Label(row2, text="清空所有抽签日志：").pack(side="left", padx=10)
+        ttk.Button(row2, text="清空日志", command=self._clear_logs, width=12).pack(side="right", padx=10)
+        
+        # 重置所有系统数据
+        row3 = ttk.Frame(reset_frame)
+        row3.pack(fill="x", pady=5)
+        ttk.Label(row3, text="重置所有系统数据：").pack(side="left", padx=10)
+        ttk.Button(row3, text="重置系统", command=self._reset_all, width=12).pack(side="right", padx=10)
+
+    def _clear_people(self):
+        if messagebox.askyesno("确认", "确定要清空专家名库吗？此操作不可恢复。"):
+            self.app.db.delete_all_people()
+            messagebox.showinfo("成功", "专家名库已清空")
+
+    def _clear_logs(self):
+        if messagebox.askyesno("确认", "确定要清空所有抽签日志吗？此操作不可恢复。"):
+            self.app.db.delete_all_logs()
+            messagebox.showinfo("成功", "抽签日志已清空")
+
+    def _reset_all(self):
+        if messagebox.askyesno("确认", "确定要重置所有系统数据吗？\n\n这将：\n1. 清空专家名库\n2. 清空所有抽签日志\n3. 重置所有账户（恢复默认管理员账户）\n\n此操作不可恢复！"):
+            self.app.db.reset_database()
+            messagebox.showinfo("成功", "系统已重置，请重新登录")
+            self.app.current_user = None
+            self.app.show_login_frame()
 
     def load_config(self):
         cfg = self.app.db.get_mail_config()
@@ -2303,10 +2439,22 @@ class MainFrame(ttk.Frame):
 
         self.user_label = ttk.Label(top, text="")
         self.user_label.pack(side="left", padx=8)
-
-        ttk.Button(top, text="退出登录", command=self.logout, width=11).pack(
-            side="right", padx=8
-        )
+        
+        # 退出登录按钮（放在当前用户右边）
+        self.btn_logout = ttk.Button(top, text="退出登录", command=self.logout, width=10)
+        self.btn_logout.pack(side="left", padx=5)
+        
+        # 右上角小logo
+        try:
+            logo_path = os.path.join(os.path.dirname(__file__), "珠海安防协会logo.gif")
+            if os.path.exists(logo_path):
+                logo_img = tk.PhotoImage(file=logo_path)
+                logo_img = logo_img.subsample(16, 16)  # 缩小到1/16
+                logo_label = ttk.Label(top, image=logo_img)
+                logo_label.image = logo_img
+                logo_label.pack(side="right", padx=10)
+        except Exception:
+            pass
 
         self.notebook = ttk.Notebook(outer)
         self.notebook.pack(fill="both", expand=True, padx=10, pady=5)
@@ -2338,7 +2486,7 @@ class MainFrame(ttk.Frame):
                     self.notebook.add(self.account_frame, text="账户管理")
                     self.account_tab_added = True
                 if not self.mail_tab_added:
-                    self.notebook.add(self.mail_frame, text="邮件设置")
+                    self.notebook.add(self.mail_frame, text="设置")
                     self.mail_tab_added = True
             else:
                 if self.account_tab_added:
@@ -2376,10 +2524,20 @@ class App(tk.Tk):
     def __init__(self):
         super().__init__()
 
+        # 设置窗口图标
+        try:
+            logo_path = os.path.join(os.path.dirname(__file__), "珠海安防协会logo.gif")
+            if os.path.exists(logo_path):
+                icon_img = tk.PhotoImage(file=logo_path)
+                icon_img = icon_img.subsample(16, 16)  # 缩小图标
+                self.iconphoto(False, icon_img)
+        except Exception:
+            pass
+
         # 初始窗口大小，允许缩放
         self.title("珠海安防协会项目论证专家抽签系统")
         self.geometry("1400x900")
-        self.minsize(1600, 900)
+        self.minsize(1600, 1150)
         self.resizable(True, True)
 
         # 全局字体
