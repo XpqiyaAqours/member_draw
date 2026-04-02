@@ -176,6 +176,18 @@ class Database:
             )
         """
         )
+        
+        # 接收邮箱列表表
+        c.execute(
+            """
+            CREATE TABLE IF NOT EXISTS email_recipients (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                email TEXT NOT NULL UNIQUE,
+                name TEXT,
+                created_at TEXT NOT NULL
+            )
+        """
+        )
 
         self.conn.commit()
         
@@ -601,24 +613,44 @@ class Database:
         )
         self.conn.commit()
 
-    def get_admin_emails(self):
-        """获取允许接收邮件的管理员邮箱列表"""
+    # ---------- 邮箱列表管理 ----------
+    def get_email_recipients(self):
+        """获取所有接收邮箱列表"""
         c = self.conn.cursor()
-        c.execute(
-            "SELECT email FROM users WHERE role='admin' AND email IS NOT NULL AND email<>'' AND receive_email=1"
-        )
-        return [r["email"] for r in c.fetchall()]
+        c.execute("SELECT * FROM email_recipients ORDER BY id ASC")
+        return c.fetchall()
 
-    def set_user_receive_email(self, user_id, receive_email):
-        """设置用户是否接收邮件通知"""
+    def add_email_recipient(self, email, name=""):
+        """添加接收邮箱"""
         c = self.conn.cursor()
         c.execute(
-            "UPDATE users SET receive_email=? WHERE id=?",
-            (1 if receive_email else 0, user_id),
+            "INSERT INTO email_recipients (email, name, created_at) VALUES (?,?,?)",
+            (email, name, datetime.datetime.now().strftime("%Y-%m-%d %H:%M:%S")),
         )
         self.conn.commit()
 
-    # Excel IO - 日志
+    def update_email_recipient(self, recipient_id, email, name=""):
+        """更新接收邮箱"""
+        c = self.conn.cursor()
+        c.execute(
+            "UPDATE email_recipients SET email=?, name=? WHERE id=?",
+            (email, name, recipient_id),
+        )
+        self.conn.commit()
+
+    def delete_email_recipient(self, recipient_id):
+        """删除接收邮箱"""
+        c = self.conn.cursor()
+        c.execute("DELETE FROM email_recipients WHERE id=?", (recipient_id,))
+        self.conn.commit()
+
+    def get_recipient_emails(self):
+        """获取所有接收邮箱地址列表"""
+        c = self.conn.cursor()
+        c.execute("SELECT email FROM email_recipients")
+        return [r["email"] for r in c.fetchall()]
+
+    # ---------- Excel IO - 日志 ----------
     def export_logs_to_excel(self, path):
         if openpyxl is None:
             raise RuntimeError("缺少 openpyxl 库，无法导出 Excel")
@@ -702,7 +734,7 @@ class LoginFrame(ttk.Frame):
             logo_path = os.path.join(os.path.dirname(__file__), "珠海安防协会logo.gif")
             if os.path.exists(logo_path):
                 logo_img = tk.PhotoImage(file=logo_path)
-                logo_img = logo_img.subsample(6, 6)  # 缩小到1/6
+                logo_img = logo_img.subsample(7, 7)  # 缩小到1/6
                 logo_label = ttk.Label(container, image=logo_img)
                 logo_label.image = logo_img
                 logo_label.grid(row=0, column=0, columnspan=2, pady=(0, 20))
@@ -756,7 +788,7 @@ class LoginFrame(ttk.Frame):
 
         ttk.Label(
             container,
-            text="Copyright © 2026 杜凌轩",
+            text="Copyright © 2026 Takasak1Yu",
             foreground="gray",
         ).grid(row=6, column=0, columnspan=2, pady=(20, 0))
 
@@ -1511,21 +1543,26 @@ class DrawFrame(ttk.Frame):
         info_frame = ttk.Frame(outer)
         info_frame.pack(pady=30)
         
-        # 论政项目名称（固定显示）
+        # 论政项目名称（同一行显示）
         self.title_var = tk.StringVar()
-        ttk.Label(info_frame, text="论政项目名称：", font=("SimHei", 12)).pack()
-        self.title_label = ttk.Label(info_frame, textvariable=self.title_var, font=("SimHei", 14, "bold"))
-        self.title_label.pack(pady=(0, 15))
+        title_row = ttk.Frame(info_frame)
+        title_row.pack(pady=5)
+        ttk.Label(title_row, text="论政项目名称：", font=("SimHei", 12)).pack(side="left")
+        ttk.Label(title_row, textvariable=self.title_var, font=("SimHei", 12, "bold")).pack(side="left", padx=5)
         
-        # 申请论证单位
-        ttk.Label(info_frame, text="申请论证单位：", font=("SimHei", 12)).pack()
+        # 申请论证单位（同一行显示）
         self.unit_var = tk.StringVar()
-        ttk.Label(info_frame, textvariable=self.unit_var, font=("SimHei", 12)).pack(pady=(0, 15))
+        unit_row = ttk.Frame(info_frame)
+        unit_row.pack(pady=5)
+        ttk.Label(unit_row, text="申请论证单位：", font=("SimHei", 12)).pack(side="left")
+        ttk.Label(unit_row, textvariable=self.unit_var, font=("SimHei", 12, "bold")).pack(side="left", padx=5)
         
-        # 已到场人数
-        ttk.Label(info_frame, text="已到场人数：", font=("SimHei", 12)).pack()
+        # 已到场专家（同一行显示）
         self.present_var = tk.StringVar(value="0 / 3")
-        ttk.Label(info_frame, textvariable=self.present_var, font=("SimHei", 12)).pack(pady=(0, 15))
+        present_row = ttk.Frame(info_frame)
+        present_row.pack(pady=5)
+        ttk.Label(present_row, text="已到场专家：", font=("SimHei", 12)).pack(side="left")
+        ttk.Label(present_row, textvariable=self.present_var, font=("SimHei", 12, "bold")).pack(side="left", padx=5)
 
         ttk.Separator(outer, orient="horizontal").pack(fill="x", pady=8)
 
@@ -1536,7 +1573,7 @@ class DrawFrame(ttk.Frame):
         person_frame.columnconfigure(0, weight=1)
         person_frame.columnconfigure(1, weight=1)
 
-        ttk.Label(person_frame, text="抽中人员姓名:").grid(
+        ttk.Label(person_frame, text="专家姓名:").grid(
             row=0, column=0, sticky="e", padx=20, pady=10
         )
         self.name_var = tk.StringVar()
@@ -1619,8 +1656,8 @@ class DrawFrame(ttk.Frame):
         ttk.Button(supp_btn1, text="返回", command=self._show_choice, width=10).pack(side="right")
 
         self.supp_step2 = ttk.Frame(outer)
-        ttk.Label(self.supp_step2, text="勾选需改为不到场的到场人员", font=SUBTITLE_FONT).pack(
-            anchor="w", padx=5, pady=(0, 10)
+        ttk.Label(self.supp_step2, text="请选择未能到场的专家", font=SUBTITLE_FONT).pack(
+            anchor="center", padx=5, pady=(0, 10)
         )
         self.supp_check_vars = {}
         self.supp_check_frame = ttk.Frame(self.supp_step2)
@@ -1632,8 +1669,8 @@ class DrawFrame(ttk.Frame):
         ttk.Button(supp_btn2, text="上一步", command=self._show_supplement_step1, width=10).pack(side="right")
 
         self.supp_step3 = ttk.Frame(outer)
-        ttk.Label(self.supp_step3, text="补抽到场人员", font=SUBTITLE_FONT).pack(
-            anchor="w", padx=5, pady=(0, 10)
+        ttk.Label(self.supp_step3, text="补录专家", font=SUBTITLE_FONT).pack(
+            anchor="center", padx=5, pady=(0, 10)
         )
         supp_info = ttk.Frame(self.supp_step3)
         supp_info.pack(pady=10)
@@ -1642,7 +1679,7 @@ class DrawFrame(ttk.Frame):
         ttk.Label(supp_info, text="当前状态:").grid(row=0, column=0, sticky="e", padx=10, pady=5)
         self.supp_status_var = tk.StringVar()
         ttk.Label(supp_info, textvariable=self.supp_status_var).grid(row=0, column=1, sticky="w", padx=10, pady=5)
-        ttk.Label(supp_info, text="已补抽到场人数:").grid(row=1, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(supp_info, text="已补录专家数:").grid(row=1, column=0, sticky="e", padx=10, pady=5)
         self.supp_present_var = tk.StringVar()
         ttk.Label(supp_info, textvariable=self.supp_present_var).grid(row=1, column=1, sticky="w", padx=10, pady=5)
 
@@ -1652,12 +1689,15 @@ class DrawFrame(ttk.Frame):
         supp_draw_info.pack(pady=10)
         supp_draw_info.columnconfigure(0, weight=1)
         supp_draw_info.columnconfigure(1, weight=1)
-        ttk.Label(supp_draw_info, text="抽中人员姓名:").grid(row=0, column=0, sticky="e", padx=10, pady=5)
+        ttk.Label(supp_draw_info, text="专家姓名:").grid(row=0, column=0, sticky="e", padx=10, pady=5)
         self.supp_name_var = tk.StringVar()
         ttk.Label(supp_draw_info, textvariable=self.supp_name_var, font=("Microsoft YaHei", 14)).grid(row=0, column=1, sticky="w", padx=10, pady=5)
         ttk.Label(supp_draw_info, text="手机号:").grid(row=1, column=0, sticky="e", padx=10, pady=5)
         self.supp_phone_var = tk.StringVar()
         ttk.Label(supp_draw_info, textvariable=self.supp_phone_var).grid(row=1, column=1, sticky="w", padx=10, pady=5)
+        ttk.Label(supp_draw_info, text="单位:").grid(row=2, column=0, sticky="e", padx=10, pady=5)
+        self.supp_unit_var = tk.StringVar()
+        ttk.Label(supp_draw_info, textvariable=self.supp_unit_var).grid(row=2, column=1, sticky="w", padx=10, pady=5)
 
         supp_btns = ttk.Frame(self.supp_step3)
         supp_btns.pack(pady=10)
@@ -1672,7 +1712,7 @@ class DrawFrame(ttk.Frame):
 
         supp_btn3 = ttk.Frame(self.supp_step3)
         supp_btn3.pack(pady=15)
-        ttk.Button(supp_btn3, text="完成补抽", command=self._supplement_finish, width=12).pack(side="right", padx=5)
+        ttk.Button(supp_btn3, text="完成补录", command=self._supplement_finish, width=12).pack(side="right", padx=5)
 
     def _refresh_supplement_session_list(self):
         for i in self.supp_sessions_tree.get_children():
@@ -1719,10 +1759,11 @@ class DrawFrame(ttk.Frame):
         self.supp_order_no = self.supplement_order_base
         people = self.app.db.get_available_people()
         self.supp_people_cache = list(people)
-        self.supp_status_var.set(f"论政项目 ID {self.supplement_session_id} 补抽，需补 {self.supplement_vacant_count} 人")
+        self.supp_status_var.set(f"需补 {self.supplement_vacant_count} 人")
         self.supp_present_var.set(f"0 / {self.supplement_vacant_count}")
         self.supp_name_var.set("")
         self.supp_phone_var.set("")
+        self.supp_unit_var.set("")
         self.supp_btn_stop.grid_remove()
         self.supp_btn_present.grid_remove()
         self.supp_btn_absent.grid_remove()
@@ -1790,7 +1831,7 @@ class DrawFrame(ttk.Frame):
 
     def _supplement_start_animation(self):
         if self.supp_present_count >= self.supplement_vacant_count:
-            messagebox.showinfo("提示", "本次补抽已完成")
+            messagebox.showinfo("提示", "本次补录已完成")
             return
         if not self.supp_people_cache:
             messagebox.showwarning("提示", "专家名库为空，无法抽签")
@@ -1807,6 +1848,11 @@ class DrawFrame(ttk.Frame):
         person = random.choice(self.supp_people_cache)
         self.supp_name_var.set(person["name"])
         self.supp_phone_var.set(person["phone"])
+        try:
+            unit_value = person["unit"] if "unit" in person.keys() else ""
+        except (KeyError, TypeError):
+            unit_value = ""
+        self.supp_unit_var.set(unit_value)
         self.supp_animation_id = self.after(50, self._supplement_animate_draw)
 
     def _supplement_stop_animation(self):
@@ -1821,6 +1867,11 @@ class DrawFrame(ttk.Frame):
         self.supp_order_no += 1
         self.supp_name_var.set(self.supp_current_person["name"])
         self.supp_phone_var.set(self.supp_current_person["phone"])
+        try:
+            unit_value = self.supp_current_person["unit"] if "unit" in self.supp_current_person.keys() else ""
+        except (KeyError, TypeError):
+            unit_value = ""
+        self.supp_unit_var.set(unit_value)
 
         self.supp_btn_stop.grid_remove()
         self.supp_btn_present.grid()
@@ -1850,14 +1901,16 @@ class DrawFrame(ttk.Frame):
         self.supp_current_person = None
         self.supp_name_var.set("")
         self.supp_phone_var.set("")
+        self.supp_unit_var.set("")
         self.supp_btn_present.grid_remove()
         self.supp_btn_absent.grid_remove()
         self.supp_btn_draw.grid()
         if self.supp_present_count >= self.supplement_vacant_count:
             self.supp_btn_draw["state"] = "disabled"
-            self.supp_status_var.set(f"论政项目 ID {self.supplement_session_id} 补抽已完成")
-            messagebox.showinfo("完成", "本次补抽流程已完成")
+            self.supp_status_var.set("补录已完成")
+            messagebox.showinfo("完成", "本次补录流程已完成")
             self.app.send_sessions_email(self, [self.supplement_session_id])
+            self._show_choice()
 
     def _supplement_finish(self):
         if self.supp_present_count < self.supplement_vacant_count:
@@ -2087,7 +2140,7 @@ class UsersFrame(ttk.Frame):
         table_frame = ttk.Frame(outer)
         table_frame.pack(fill="both", expand=True)
 
-        columns = ("id", "username", "email", "role", "receive_email")
+        columns = ("id", "username", "email", "role")
         self.tree = ttk.Treeview(
             table_frame,
             columns=columns,
@@ -2099,13 +2152,11 @@ class UsersFrame(ttk.Frame):
         self.tree.heading("username", text="用户名")
         self.tree.heading("email", text="电子邮箱")
         self.tree.heading("role", text="角色")
-        self.tree.heading("receive_email", text="接收邮件通知")
 
         self.tree.column("id", width=0, minwidth=0, anchor="center", stretch=False)
-        self.tree.column("username", width=150, anchor="w", stretch=True)
-        self.tree.column("email", width=200, anchor="w", stretch=True)
-        self.tree.column("role", width=100, anchor="center", stretch=False)
-        self.tree.column("receive_email", width=100, anchor="center", stretch=False)
+        self.tree.column("username", width=180, anchor="w", stretch=True)
+        self.tree.column("email", width=250, anchor="w", stretch=True)
+        self.tree.column("role", width=120, anchor="center", stretch=False)
         self.tree.pack(side="left", fill="both", expand=True)
 
         vsb = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
@@ -2119,29 +2170,27 @@ class UsersFrame(ttk.Frame):
             self.tree.delete(i)
         for row in self.app.db.get_all_users():
             role_text = "管理员" if row["role"] == "admin" else "普通用户"
-            receive_text = "是" if (row["receive_email"] if "receive_email" in row.keys() else 1) else "否"
             self.tree.insert(
                 "",
                 "end",
-                values=(row["id"], row["username"], row["email"] or "", role_text, receive_text),
+                values=(row["id"], row["username"], row["email"] or "", role_text),
             )
 
     def _get_selected_id_role(self):
         sel = self.tree.selection()
         if not sel:
-            return None, None, None
+            return None, None
         values = self.tree.item(sel[0], "values")
         uid = int(values[0])
         role_text = values[3]
         role = "admin" if role_text == "管理员" else "user"
-        receive_email = values[4] == "是"
-        return uid, role, receive_email
+        return uid, role
 
     def add_user(self):
         self._edit_dialog()
 
     def edit_user(self):
-        uid, role, receive_email = self._get_selected_id_role()
+        uid, role = self._get_selected_id_role()
         if not uid:
             messagebox.showwarning("提示", "请先选择一个账户")
             return
@@ -2150,10 +2199,9 @@ class UsersFrame(ttk.Frame):
         if uid not in users:
             return
         u = users[uid]
-        receive_email = u["receive_email"] if "receive_email" in u.keys() else 1
-        self._edit_dialog(uid, u["username"], u["role"], u["email"] or "", receive_email)
+        self._edit_dialog(uid, u["username"], u["role"], u["email"] or "")
 
-    def _edit_dialog(self, user_id=None, username="", role="user", email="", receive_email=1):
+    def _edit_dialog(self, user_id=None, username="", role="user", email=""):
         dlg = tk.Toplevel(self)
         dlg.title("账户信息")
         dlg.grab_set()
@@ -2204,20 +2252,11 @@ class UsersFrame(ttk.Frame):
         )
         cb.grid(row=4, column=1, padx=8, pady=10, sticky="w")
 
-        ttk.Label(container, text="邮件通知:").grid(
-            row=5, column=0, padx=8, pady=10, sticky="e"
-        )
-        receive_var = tk.BooleanVar(value=bool(receive_email))
-        ttk.Checkbutton(
-            container, text="允许接收邮件通知", variable=receive_var
-        ).grid(row=5, column=1, padx=8, pady=10, sticky="w")
-
         def on_ok():
             name = username_var.get().strip()
             pwd = pwd_var.get().strip()
             email_val = email_var.get().strip()
             role_choice = "admin" if role_var.get() == "管理员" else "user"
-            receive_choice = 1 if receive_var.get() else 0
             if not name:
                 messagebox.showwarning("提示", "用户名不能为空")
                 return
@@ -2227,22 +2266,22 @@ class UsersFrame(ttk.Frame):
                     if not pwd:
                         messagebox.showwarning("提示", "新增账户时密码不能为空")
                         return
-                    ok, msg = self.app.db.register_user(name, pwd, role=role_choice, email=email_val, receive_email=receive_choice)
+                    ok, msg = self.app.db.register_user(name, pwd, role=role_choice, email=email_val)
                     if not ok:
                         messagebox.showerror("失败", msg)
                         return
                 else:
                     if pwd:
-                        self.app.db.update_user(user_id, name, role_choice, pwd, email=email_val, receive_email=receive_choice)
+                        self.app.db.update_user(user_id, name, role_choice, pwd, email=email_val)
                     else:
-                        self.app.db.update_user(user_id, name, role_choice, email=email_val, receive_email=receive_choice)
+                        self.app.db.update_user(user_id, name, role_choice, email=email_val)
                 self.refresh()
                 dlg.destroy()
             except Exception as e:
                 messagebox.showerror("错误", str(e))
 
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=6, column=0, columnspan=2, pady=(18, 0))
+        btn_frame.grid(row=5, column=0, columnspan=2, pady=(18, 0))
         ttk.Button(btn_frame, text="确定", command=on_ok, width=11).grid(
             row=0, column=0, padx=10
         )
@@ -2251,7 +2290,7 @@ class UsersFrame(ttk.Frame):
         )
 
     def delete_user(self):
-        uid, role, receive_email = self._get_selected_id_role()
+        uid, role = self._get_selected_id_role()
         if not uid:
             messagebox.showwarning("提示", "请先选择一个账户")
             return
@@ -2264,7 +2303,7 @@ class UsersFrame(ttk.Frame):
             messagebox.showerror("错误", str(e))
 
     def change_role(self, new_role):
-        uid, _old_role, _receive_email = self._get_selected_id_role()
+        uid, _old_role = self._get_selected_id_role()
         if not uid:
             messagebox.showwarning("提示", "请先选择一个账户")
             return
@@ -2354,6 +2393,39 @@ class MailConfigFrame(ttk.Frame):
             side="left", padx=10
         )
         
+        # 接收邮箱列表区域（放在邮件设置内）
+        ttk.Separator(mail_frame, orient="horizontal").pack(fill="x", pady=10)
+        
+        email_list_label = ttk.Label(mail_frame, text="接收邮箱列表", font=("Microsoft YaHei", 10, "bold"))
+        email_list_label.pack(anchor="w", padx=5, pady=(0, 5))
+        
+        # 按钮栏（居中）
+        email_btn_frame = ttk.Frame(mail_frame)
+        email_btn_frame.pack(pady=5)
+        ttk.Button(email_btn_frame, text="添加邮箱", command=self._add_email, width=10).pack(side="left", padx=5)
+        ttk.Button(email_btn_frame, text="编辑邮箱", command=self._edit_email, width=10).pack(side="left", padx=5)
+        ttk.Button(email_btn_frame, text="删除邮箱", command=self._delete_email, width=10).pack(side="left", padx=5)
+        
+        # 邮箱列表
+        list_frame = ttk.Frame(mail_frame)
+        list_frame.pack(fill="both", expand=True, pady=5)
+        
+        columns = ("id", "email", "name")
+        self.email_tree = ttk.Treeview(list_frame, columns=columns, show="headings", height=6)
+        self.email_tree.heading("id", text="")
+        self.email_tree.heading("email", text="邮箱地址")
+        self.email_tree.heading("name", text="名称")
+        self.email_tree.column("id", width=0, minwidth=0, stretch=False)
+        self.email_tree.column("email", width=250, anchor="w")
+        self.email_tree.column("name", width=150, anchor="w")
+        self.email_tree.pack(side="left", fill="both", expand=True)
+        
+        vsb = ttk.Scrollbar(list_frame, orient="vertical", command=self.email_tree.yview)
+        self.email_tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+        
+        self._refresh_email_list()
+        
         # 重置设置区域
         reset_frame = ttk.LabelFrame(outer, text="重置设置", padding=15)
         reset_frame.pack(fill="x", pady=10, padx=10)
@@ -2363,35 +2435,97 @@ class MailConfigFrame(ttk.Frame):
         row1.pack(fill="x", pady=5)
         ttk.Label(row1, text="清空当前专家名库：").pack(side="left", padx=10)
         ttk.Button(row1, text="清空名库", command=self._clear_people, width=12).pack(side="right", padx=10)
-        
-        # 清空所有抽签日志
-        row2 = ttk.Frame(reset_frame)
-        row2.pack(fill="x", pady=5)
-        ttk.Label(row2, text="清空所有抽签日志：").pack(side="left", padx=10)
-        ttk.Button(row2, text="清空日志", command=self._clear_logs, width=12).pack(side="right", padx=10)
-        
-        # 重置所有系统数据
-        row3 = ttk.Frame(reset_frame)
-        row3.pack(fill="x", pady=5)
-        ttk.Label(row3, text="重置所有系统数据：").pack(side="left", padx=10)
-        ttk.Button(row3, text="重置系统", command=self._reset_all, width=12).pack(side="right", padx=10)
+
+    def _refresh_email_list(self):
+        for i in self.email_tree.get_children():
+            self.email_tree.delete(i)
+        for r in self.app.db.get_email_recipients():
+            self.email_tree.insert("", "end", values=(r["id"], r["email"], r["name"] or ""))
+
+    def _add_email(self):
+        self._edit_email_dialog()
+
+    def _edit_email(self):
+        sel = self.email_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选择一个邮箱")
+            return
+        values = self.email_tree.item(sel[0], "values")
+        self._edit_email_dialog(int(values[0]), values[1], values[2])
+
+    def _edit_email_dialog(self, recipient_id=None, email="", name=""):
+        dlg = tk.Toplevel(self)
+        dlg.title("添加邮箱" if recipient_id is None else "编辑邮箱")
+        dlg.grab_set()
+        dlg.resizable(False, False)
+
+        container = ttk.Frame(dlg, padding=25)
+        container.grid(row=0, column=0, sticky="nsew")
+        dlg.columnconfigure(0, weight=1)
+        dlg.rowconfigure(0, weight=1)
+
+        ttk.Label(container, text="邮箱地址:").grid(
+            row=0, column=0, padx=8, pady=10, sticky="e"
+        )
+        email_var = tk.StringVar(value=email)
+        ttk.Entry(container, textvariable=email_var, width=28).grid(
+            row=0, column=1, padx=8, pady=10, sticky="w"
+        )
+
+        ttk.Label(container, text="名称:").grid(
+            row=1, column=0, padx=8, pady=10, sticky="e"
+        )
+        name_var = tk.StringVar(value=name)
+        ttk.Entry(container, textvariable=name_var, width=28).grid(
+            row=1, column=1, padx=8, pady=10, sticky="w"
+        )
+
+        def on_ok():
+            email_val = email_var.get().strip()
+            name_val = name_var.get().strip()
+            if not email_val:
+                messagebox.showwarning("提示", "邮箱地址不能为空")
+                return
+            try:
+                if recipient_id is None:
+                    self.app.db.add_email_recipient(email_val, name_val)
+                else:
+                    self.app.db.update_email_recipient(recipient_id, email_val, name_val)
+                self._refresh_email_list()
+                dlg.destroy()
+            except Exception as e:
+                messagebox.showerror("错误", str(e))
+
+        btn_frame = ttk.Frame(container)
+        btn_frame.grid(row=2, column=0, columnspan=2, pady=(18, 0))
+        ttk.Button(btn_frame, text="确定", command=on_ok, width=11).grid(
+            row=0, column=0, padx=10
+        )
+        ttk.Button(btn_frame, text="取消", command=dlg.destroy, width=11).grid(
+            row=0, column=1, padx=10
+        )
+
+        dlg.update_idletasks()
+        width = dlg.winfo_width()
+        height = dlg.winfo_height()
+        x = (dlg.winfo_screenwidth() // 2) - (width // 2)
+        y = (dlg.winfo_screenheight() // 2) - (height // 2)
+        dlg.geometry(f"+{x}+{y}")
+
+    def _delete_email(self):
+        sel = self.email_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选择一个邮箱")
+            return
+        values = self.email_tree.item(sel[0], "values")
+        if messagebox.askyesno("确认", f"确定要删除邮箱 {values[1]} 吗？"):
+            self.app.db.delete_email_recipient(int(values[0]))
+            self._refresh_email_list()
 
     def _clear_people(self):
         if messagebox.askyesno("确认", "确定要清空专家名库吗？此操作不可恢复。"):
             self.app.db.delete_all_people()
             messagebox.showinfo("成功", "专家名库已清空")
-
-    def _clear_logs(self):
-        if messagebox.askyesno("确认", "确定要清空所有抽签日志吗？此操作不可恢复。"):
-            self.app.db.delete_all_logs()
-            messagebox.showinfo("成功", "抽签日志已清空")
-
-    def _reset_all(self):
-        if messagebox.askyesno("确认", "确定要重置所有系统数据吗？\n\n这将：\n1. 清空专家名库\n2. 清空所有抽签日志\n3. 重置所有账户（恢复默认管理员账户）\n\n此操作不可恢复！"):
-            self.app.db.reset_database()
-            messagebox.showinfo("成功", "系统已重置，请重新登录")
-            self.app.current_user = None
-            self.app.show_login_frame()
 
     def load_config(self):
         cfg = self.app.db.get_mail_config()
@@ -2593,9 +2727,9 @@ class App(tk.Tk):
         if not cfg["smtp_server"] or not cfg["from_addr"]:
             messagebox.showerror("错误", "请先在「邮件设置」中配置 SMTP 服务器和发件人邮箱", parent=parent)
             return False
-        admin_emails = self.db.get_admin_emails()
-        if not admin_emails:
-            messagebox.showerror("错误", "当前没有配置管理员邮箱，无法发送邮件", parent=parent)
+        recipient_emails = self.db.get_recipient_emails()
+        if not recipient_emails:
+            messagebox.showerror("错误", "当前没有配置接收邮箱，请在「设置」中添加接收邮箱", parent=parent)
             return False
 
         # 组装邮件内容
@@ -2647,7 +2781,7 @@ class App(tk.Tk):
                     msg = EmailMessage()
                     msg["Subject"] = subject
                     msg["From"] = cfg["from_addr"]
-                    msg["To"] = ", ".join(admin_emails)
+                    msg["To"] = ", ".join(recipient_emails)
                     msg.set_content(body)
 
                     server.send_message(msg)
