@@ -2591,11 +2591,11 @@ class App(tk.Tk):
         """将一个或多个论政项目的日志发送到所有管理员邮箱"""
         cfg = self.db.get_mail_config()
         if not cfg["smtp_server"] or not cfg["from_addr"]:
-            messagebox.showerror(parent, "错误", "请先在“邮件设置”中配置 SMTP 服务器和发件人邮箱")
+            messagebox.showerror("错误", "请先在「邮件设置」中配置 SMTP 服务器和发件人邮箱", parent=parent)
             return False
         admin_emails = self.db.get_admin_emails()
         if not admin_emails:
-            messagebox.showerror(parent, "错误", "当前没有配置管理员邮箱，无法发送邮件")
+            messagebox.showerror("错误", "当前没有配置管理员邮箱，无法发送邮件", parent=parent)
             return False
 
         # 组装邮件内容
@@ -2624,7 +2624,7 @@ class App(tk.Tk):
             lines.append("")
 
         if not lines:
-            messagebox.showwarning(parent, "提示", "未找到可发送的日志记录")
+            messagebox.showwarning("提示", "未找到可发送的日志记录", parent=parent)
             return False
 
         body = "\n".join(lines)
