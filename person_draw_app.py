@@ -460,7 +460,7 @@ class Database:
         return c.fetchall()
 
     def get_session_logs(self, session_id):
-        """获取某论政项目的所有抽签/补签日志，按记录时间倒序（最新在上）"""
+        """获取某论证项目的所有抽签/补签日志，按记录时间倒序（最新在上）"""
         c = self.conn.cursor()
         c.execute(
             """
@@ -475,13 +475,13 @@ class Database:
         return c.fetchall()
 
     def get_completed_sessions(self):
-        """返回已完成抽签的论政项目"""
+        """返回已完成抽签的论证项目"""
         c = self.conn.cursor()
         c.execute("SELECT * FROM sessions WHERE completed=1 ORDER BY id DESC")
         return c.fetchall()
 
     def get_present_logs(self, session_id):
-        """返回某论政项目中所有到场的抽签记录（用于补抽时选择标记不到场）"""
+        """返回某论证项目中所有到场的抽签记录（用于补抽时选择标记不到场）"""
         c = self.conn.cursor()
         c.execute(
             """
@@ -507,7 +507,7 @@ class Database:
         )
 
     def get_max_order_no(self, session_id):
-        """获取某论政项目中当前最大的 order_no，用于补抽时续写"""
+        """获取某论证项目中当前最大的 order_no，用于补抽时续写"""
         c = self.conn.cursor()
         c.execute(
             "SELECT COALESCE(MAX(order_no), 0) AS mx FROM draw_logs WHERE session_id=?",
@@ -734,7 +734,7 @@ class LoginFrame(ttk.Frame):
             logo_path = os.path.join(os.path.dirname(__file__), "珠海安防协会logo.gif")
             if os.path.exists(logo_path):
                 logo_img = tk.PhotoImage(file=logo_path)
-                logo_img = logo_img.subsample(7, 7)  # 缩小到1/6
+                logo_img = logo_img.subsample(7, 7)  # 缩小到1/7
                 logo_label = ttk.Label(container, image=logo_img)
                 logo_label.image = logo_img
                 logo_label.grid(row=0, column=0, columnspan=2, pady=(0, 20))
@@ -780,11 +780,6 @@ class LoginFrame(ttk.Frame):
         ttk.Button(btn_frame, text="登录", command=self.login, width=14).grid(
             row=0, column=0, padx=15
         )
-        
-        # 重置系统按钮（临时测试）
-        ttk.Button(btn_frame, text="重置系统（临时测试）", command=self._reset_system, width=16).grid(
-            row=1, column=0, padx=15, pady=(10, 0)
-        )
 
         ttk.Label(
             container,
@@ -798,14 +793,6 @@ class LoginFrame(ttk.Frame):
             self.pwd_entry.config(show="")
         else:
             self.pwd_entry.config(show="*")
-
-    def _reset_system(self):
-        """重置系统（临时测试功能）"""
-        if messagebox.askyesno("确认", "确定要重置整个系统吗？\n\n这将删除所有数据并恢复默认设置。\n此操作不可恢复！"):
-            self.app.db.reset_database()
-            messagebox.showinfo("成功", "系统已重置")
-            self.username_var.set("")
-            self.password_var.set("")
 
     def login(self):
         username = self.username_var.get().strip()
@@ -1244,7 +1231,10 @@ class LogsFrame(ttk.Frame):
             btn_bar, text="发送记录至邮箱", command=self.send_logs_email, width=14
         ).pack(side="left", padx=5)
         ttk.Button(
-            btn_bar, text="导出至Excel", command=self.export_logs, width=14
+            btn_bar, text="导出所有日志", command=self.export_all_logs, width=12
+        ).pack(side="left", padx=5)
+        ttk.Button(
+            btn_bar, text="导出选择日志", command=self.export_selected_logs, width=12
         ).pack(side="left", padx=5)
 
         main = ttk.Panedwindow(outer, orient="horizontal")
@@ -1259,7 +1249,7 @@ class LogsFrame(ttk.Frame):
         # 隐藏 ID 列，仅用于内部
         self.sessions_tree.heading("id", text="")
         self.sessions_tree.heading("created_at", text="时间")
-        self.sessions_tree.heading("title", text="论政项目名称")
+        self.sessions_tree.heading("title", text="论证项目名称")
         self.sessions_tree.column("id", width=0, minwidth=0, anchor="center", stretch=False)
         self.sessions_tree.column("created_at", width=200, anchor="center", stretch=False)
         self.sessions_tree.column("title", width=260, stretch=True)
@@ -1345,29 +1335,96 @@ class LogsFrame(ttk.Frame):
                 ),
             )
 
-    def export_logs(self):
-        if openpyxl is None:
-            messagebox.showerror("错误", "请先安装 openpyxl 库")
-            return
+    def export_all_logs(self):
+        """导出所有日志为txt文件"""
         path = filedialog.asksaveasfilename(
-            defaultextension=".xlsx",
-            filetypes=[("Excel 文件", "*.xlsx")],
-            title="导出抽签日志",
-            initialfile="logs.xlsx",
+            defaultextension=".txt",
+            filetypes=[("文本文件", "*.txt")],
+            title="导出所有日志",
+            initialfile="all_logs.txt",
         )
         if not path:
             return
         try:
-            self.app.db.export_logs_to_excel(path)
+            lines = []
+            sessions = self.app.db.get_sessions()
+            for s in sessions:
+                lines.append("=" * 60)
+                lines.append(f"论证项目名称: {s['title'] or ''}")
+                lines.append(f"创建时间: {s['created_at']}")
+                lines.append("-" * 40)
+                logs = self.app.db.get_session_logs(s["id"])
+                for r in logs:
+                    if r["present"] == 1:
+                        state = "到场"
+                    elif r["absent_reason"] == "专家后续不到场，进行再次抽选。":
+                        state = "后续不到场"
+                    else:
+                        state = "不到场"
+                    lines.append(f"[{r['created_at']}] 姓名:{r['name']} 手机:{r['phone']} 到场情况:{state} 备注:{r['absent_reason'] or ''}")
+                lines.append("")
+            lines.append("=" * 60)
+            
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
+            messagebox.showinfo("成功", "导出完成")
+        except Exception as e:
+            messagebox.showerror("错误", f"导出失败: {e}")
+
+    def export_selected_logs(self):
+        """导出选择的日志为txt文件"""
+        sel = self.sessions_tree.selection()
+        if not sel:
+            messagebox.showwarning("提示", "请先选择一个论证项目")
+            return
+        if len(sel) > 1:
+            messagebox.showwarning("提示", "一次只能导出一个论证项目的日志")
+            return
+        
+        session_id = int(self.sessions_tree.item(sel[0], "values")[0])
+        sessions = [s for s in self.app.db.get_sessions() if s["id"] == session_id]
+        if not sessions:
+            messagebox.showerror("错误", "未找到该论证项目")
+            return
+        s = sessions[0]
+        
+        path = filedialog.asksaveasfilename(
+            defaultextension=".txt",
+            filetypes=[("文本文件", "*.txt")],
+            title="导出选择日志",
+            initialfile=f"{s['title'] or 'logs'}.txt",
+        )
+        if not path:
+            return
+        try:
+            lines = []
+            lines.append("=" * 60)
+            lines.append(f"论证项目名称: {s['title'] or ''}")
+            lines.append(f"创建时间: {s['created_at']}")
+            lines.append("-" * 40)
+            logs = self.app.db.get_session_logs(s["id"])
+            for r in logs:
+                if r["present"] == 1:
+                    state = "到场"
+                elif r["absent_reason"] == "专家后续不到场，进行再次抽选。":
+                    state = "后续不到场"
+                else:
+                    state = "不到场"
+                lines.append(f"[{r['created_at']}] 姓名:{r['name']} 手机:{r['phone']} 到场情况:{state} 备注:{r['absent_reason'] or ''}")
+            lines.append("")
+            lines.append("=" * 60)
+            
+            with open(path, "w", encoding="utf-8") as f:
+                f.write("\n".join(lines))
             messagebox.showinfo("成功", "导出完成")
         except Exception as e:
             messagebox.showerror("错误", f"导出失败: {e}")
 
     def send_logs_email(self):
-        """从日志界面发送一个或多个论政项目的日志到所有管理员邮箱"""
+        """从日志界面发送一个或多个论证项目的日志到所有管理员邮箱"""
         sel = self.sessions_tree.selection()
         if not sel:
-            messagebox.showwarning("提示", "请先选择至少一个论政项目")
+            messagebox.showwarning("提示", "请先选择至少一个论证项目")
             return
         session_ids = [int(self.sessions_tree.item(i, "values")[0]) for i in sel]
         self.app.send_sessions_email(self, session_ids)
@@ -1382,6 +1439,7 @@ class DrawFrame(ttk.Frame):
         self.current_person = None
         self.order_no = 0
         self.people_cache = []
+        self.drawn_person_ids = set()
         self.view_mode = "choice"
         self.supplement_session_id = None
         self.supplement_vacant_count = 0
@@ -1409,23 +1467,23 @@ class DrawFrame(ttk.Frame):
 
         ttk.Button(
             choice_inner,
-            text="新论政项目抽签",
+            text="新论证项目抽签",
             command=self._show_new_draw,
             width=24,
         ).pack(pady=20)
 
         ttk.Button(
             choice_inner,
-            text="过往论政项目补抽",
+            text="过往论证项目补抽",
             command=self._show_supplement_select,
             width=24,
         ).pack(pady=20)
 
-        # ---------- 新论政项目抽签界面 ----------
+        # ---------- 新论证项目抽签界面 ----------
         self.new_draw_frame = ttk.Frame(self.outer)
         self._build_new_draw_ui()
 
-        # ---------- 过往论政项目补抽界面 ----------
+        # ---------- 过往论证项目补抽界面 ----------
         self.supplement_frame = ttk.Frame(self.outer)
         self._build_supplement_ui()
 
@@ -1448,7 +1506,7 @@ class DrawFrame(ttk.Frame):
     def _show_new_draw(self):
         # 弹出对话框让用户输入项目名称和申请论证单位
         dialog = tk.Toplevel(self)
-        dialog.title("新建论政项目")
+        dialog.title("新建论证项目")
         dialog.geometry("450x280")
         dialog.resizable(False, False)
         
@@ -1472,8 +1530,8 @@ class DrawFrame(ttk.Frame):
         
         dialog.protocol("WM_DELETE_WINDOW", on_close)
         
-        # 论政项目名称
-        ttk.Label(dialog, text="请输入论政项目名称：", font=("SimHei", 11)).pack(pady=(15, 5))
+        # 论证项目名称
+        ttk.Label(dialog, text="请输入论证项目名称：", font=("SimHei", 11)).pack(pady=(15, 5))
         name_var = tk.StringVar()
         entry_name = ttk.Entry(dialog, textvariable=name_var, width=40)
         entry_name.pack(pady=5, padx=30)
@@ -1490,7 +1548,7 @@ class DrawFrame(ttk.Frame):
         btn_frame.pack(pady=20)
         
         def on_confirm():
-            self.new_project_name = name_var.get().strip() or "未命名论政项目"
+            self.new_project_name = name_var.get().strip() or "未命名论证项目"
             self.new_project_unit = unit_var.get().strip() or "未指定单位"
             dialog.destroy()
         
@@ -1543,11 +1601,11 @@ class DrawFrame(ttk.Frame):
         info_frame = ttk.Frame(outer)
         info_frame.pack(pady=30)
         
-        # 论政项目名称（同一行显示）
+        # 论证项目名称（同一行显示）
         self.title_var = tk.StringVar()
         title_row = ttk.Frame(info_frame)
         title_row.pack(pady=5)
-        ttk.Label(title_row, text="论政项目名称：", font=("SimHei", 12)).pack(side="left")
+        ttk.Label(title_row, text="论证项目名称：", font=("SimHei", 12)).pack(side="left")
         ttk.Label(title_row, textvariable=self.title_var, font=("SimHei", 12, "bold")).pack(side="left", padx=5)
         
         # 申请论证单位（同一行显示）
@@ -1629,7 +1687,7 @@ class DrawFrame(ttk.Frame):
         outer = self.supplement_frame
 
         self.supp_step1 = ttk.Frame(outer)
-        ttk.Label(self.supp_step1, text="选择过往论政项目", font=SUBTITLE_FONT).pack(
+        ttk.Label(self.supp_step1, text="选择过往论证项目", font=SUBTITLE_FONT).pack(
             anchor="w", padx=5, pady=(0, 10)
         )
         supp_table_frame = ttk.Frame(self.supp_step1)
@@ -1640,7 +1698,7 @@ class DrawFrame(ttk.Frame):
             supp_table_frame, columns=cols, show="headings", height=12
         )
         self.supp_sessions_tree.heading("id", text="ID")
-        self.supp_sessions_tree.heading("title", text="论政项目名称")
+        self.supp_sessions_tree.heading("title", text="论证项目名称")
         self.supp_sessions_tree.heading("created_at", text="创建时间")
         self.supp_sessions_tree.column("id", width=70)
         self.supp_sessions_tree.column("title", width=300)
@@ -1759,6 +1817,11 @@ class DrawFrame(ttk.Frame):
         self.supp_order_no = self.supplement_order_base
         people = self.app.db.get_available_people()
         self.supp_people_cache = list(people)
+        self.supp_drawn_person_ids = set()
+        c = self.app.db.conn.cursor()
+        c.execute("SELECT person_id FROM draw_logs WHERE session_id=?", (self.supplement_session_id,))
+        for row in c.fetchall():
+            self.supp_drawn_person_ids.add(row["person_id"])
         self.supp_status_var.set(f"需补 {self.supplement_vacant_count} 人")
         self.supp_present_var.set(f"0 / {self.supplement_vacant_count}")
         self.supp_name_var.set("")
@@ -1775,7 +1838,7 @@ class DrawFrame(ttk.Frame):
     def _supplement_on_session_selected(self):
         sel = self.supp_sessions_tree.selection()
         if not sel:
-            messagebox.showwarning("提示", "请先选择一个论政项目")
+            messagebox.showwarning("提示", "请先选择一个论证项目")
             return
         self.supplement_session_id = int(self.supp_sessions_tree.item(sel[0], "values")[0])
         self._show_supplement_step2()
@@ -1833,8 +1896,10 @@ class DrawFrame(ttk.Frame):
         if self.supp_present_count >= self.supplement_vacant_count:
             messagebox.showinfo("提示", "本次补录已完成")
             return
-        if not self.supp_people_cache:
-            messagebox.showwarning("提示", "专家名库为空，无法抽签")
+        
+        available_people = [p for p in self.supp_people_cache if p["id"] not in self.supp_drawn_person_ids]
+        if not available_people:
+            messagebox.showwarning("提示", "专家名库已被抽完，无法继续抽签")
             return
 
         self.supp_is_drawing = True
@@ -1845,7 +1910,14 @@ class DrawFrame(ttk.Frame):
     def _supplement_animate_draw(self):
         if not self.supp_is_drawing:
             return
-        person = random.choice(self.supp_people_cache)
+        available_people = [p for p in self.supp_people_cache if p["id"] not in self.supp_drawn_person_ids]
+        if not available_people:
+            self.supp_is_drawing = False
+            messagebox.showwarning("提示", "专家名库已被抽完，无法继续抽签")
+            self.supp_btn_stop.grid_remove()
+            self.supp_btn_draw.grid()
+            return
+        person = random.choice(available_people)
         self.supp_name_var.set(person["name"])
         self.supp_phone_var.set(person["phone"])
         try:
@@ -1863,7 +1935,15 @@ class DrawFrame(ttk.Frame):
             self.after_cancel(self.supp_animation_id)
             self.supp_animation_id = None
 
-        self.supp_current_person = random.choice(self.supp_people_cache)
+        available_people = [p for p in self.supp_people_cache if p["id"] not in self.supp_drawn_person_ids]
+        if not available_people:
+            messagebox.showwarning("提示", "专家名库已被抽完，无法继续抽签")
+            self.supp_btn_stop.grid_remove()
+            self.supp_btn_draw.grid()
+            return
+        
+        self.supp_current_person = random.choice(available_people)
+        self.supp_drawn_person_ids.add(self.supp_current_person["id"])
         self.supp_order_no += 1
         self.supp_name_var.set(self.supp_current_person["name"])
         self.supp_phone_var.set(self.supp_current_person["phone"])
@@ -1945,6 +2025,7 @@ class DrawFrame(ttk.Frame):
         self.order_no = 0
         self.current_person = None
         self.people_cache = list(people)
+        self.drawn_person_ids = set()
         self.present_var.set("0 / 3")
         self.name_var.set("")
         self.phone_var.set("")
@@ -1969,8 +2050,10 @@ class DrawFrame(ttk.Frame):
         if self.present_count >= 3:
             messagebox.showinfo("提示", "本次抽签已完成 3 名到场人员")
             return
-        if not self.people_cache:
-            messagebox.showwarning("提示", "专家名库为空，无法抽签")
+        
+        available_people = [p for p in self.people_cache if p["id"] not in self.drawn_person_ids]
+        if not available_people:
+            messagebox.showwarning("提示", "专家名库已被抽完，无法继续抽签")
             return
 
         self.is_drawing = True
@@ -1981,10 +2064,16 @@ class DrawFrame(ttk.Frame):
     def _animate_draw(self):
         if not self.is_drawing:
             return
-        person = random.choice(self.people_cache)
+        available_people = [p for p in self.people_cache if p["id"] not in self.drawn_person_ids]
+        if not available_people:
+            self.is_drawing = False
+            messagebox.showwarning("提示", "专家名库已被抽完，无法继续抽签")
+            self.btn_stop.grid_remove()
+            self.btn_draw.grid()
+            return
+        person = random.choice(available_people)
         self.name_var.set(person["name"])
         self.phone_var.set(person["phone"])
-        # 显示单位信息
         try:
             unit_value = person["unit"] if "unit" in person.keys() else ""
         except (KeyError, TypeError):
@@ -2000,11 +2089,18 @@ class DrawFrame(ttk.Frame):
             self.after_cancel(self.draw_animation_id)
             self.draw_animation_id = None
 
-        self.current_person = random.choice(self.people_cache)
+        available_people = [p for p in self.people_cache if p["id"] not in self.drawn_person_ids]
+        if not available_people:
+            messagebox.showwarning("提示", "专家名库已被抽完，无法继续抽签")
+            self.btn_stop.grid_remove()
+            self.btn_draw.grid()
+            return
+        
+        self.current_person = random.choice(available_people)
+        self.drawn_person_ids.add(self.current_person["id"])
         self.order_no += 1
         self.name_var.set(self.current_person["name"])
         self.phone_var.set(self.current_person["phone"])
-        # 获取单位信息，兼容sqlite3.Row对象
         try:
             unit_value = self.current_person["unit"] if "unit" in self.current_person.keys() else ""
         except (KeyError, TypeError):
@@ -2599,8 +2695,8 @@ class MainFrame(ttk.Frame):
         self.account_frame = UsersFrame(self.notebook, self.app)
         self.mail_frame = MailConfigFrame(self.notebook, self.app)
 
-        self.notebook.add(self.people_frame, text="专家名库")
         self.notebook.add(self.draw_frame, text="抽签")
+        self.notebook.add(self.people_frame, text="专家名库")
         self.notebook.add(self.logs_frame, text="日志")
         # 账户管理 / 邮件设置 Tab 在管理员登录后动态添加
         
@@ -2722,7 +2818,7 @@ class App(tk.Tk):
         self.after(0, self._adjust_scaling_for_dpi)
 
     def send_sessions_email(self, parent, session_ids):
-        """将一个或多个论政项目的日志发送到所有管理员邮箱"""
+        """将一个或多个论证项目的日志发送到所有管理员邮箱"""
         cfg = self.db.get_mail_config()
         if not cfg["smtp_server"] or not cfg["from_addr"]:
             messagebox.showerror("错误", "请先在「邮件设置」中配置 SMTP 服务器和发件人邮箱", parent=parent)
@@ -2739,8 +2835,8 @@ class App(tk.Tk):
             if not sessions:
                 continue
             s = sessions[0]
-            lines.append(f"论政项目 ID: {s['id']}")
-            lines.append(f"论政项目名称: {s['title'] or ''}")
+            lines.append(f"论证项目 ID: {s['id']}")
+            lines.append(f"论证项目名称: {s['title'] or ''}")
             lines.append(f"创建时间: {s['created_at']}")
             lines.append("-" * 40)
             logs = self.db.get_session_logs(sid)
@@ -2762,7 +2858,7 @@ class App(tk.Tk):
             return False
 
         body = "\n".join(lines)
-        subject = "论政项目抽签结果"
+        subject = "论证项目抽签结果"
 
         while True:
             try:
