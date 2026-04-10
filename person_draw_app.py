@@ -1442,6 +1442,7 @@ class DrawFrame(ttk.Frame):
         self.drawn_person_ids = set()
         self.view_mode = "choice"
         self.supplement_session_id = None
+        self.supp_new_session_id = None
         self.supplement_vacant_count = 0
         self.supplement_order_base = 0
         self.is_drawing = False
@@ -1811,7 +1812,7 @@ class DrawFrame(ttk.Frame):
         self.supp_step2.pack_forget()
         self.supp_step3.pack(fill="both", expand=True)
         self.supplement_vacant_count = len([v for v in self.supp_check_vars.values() if v.get()])
-        self.supplement_order_base = self.app.db.get_max_order_no(self.supplement_session_id)
+        self.supplement_order_base = self.app.db.get_max_order_no(self.supp_new_session_id)
         self.supp_present_count = 0
         self.supp_current_person = None
         self.supp_order_no = self.supplement_order_base
@@ -1819,7 +1820,7 @@ class DrawFrame(ttk.Frame):
         self.supp_people_cache = list(people)
         self.supp_drawn_person_ids = set()
         c = self.app.db.conn.cursor()
-        c.execute("SELECT person_id FROM draw_logs WHERE session_id=?", (self.supplement_session_id,))
+        c.execute("SELECT person_id FROM draw_logs WHERE session_id=?", (self.supp_new_session_id,))
         for row in c.fetchall():
             self.supp_drawn_person_ids.add(row["person_id"])
         self.supp_status_var.set(f"需补 {self.supplement_vacant_count} 人")
@@ -1849,18 +1850,30 @@ class DrawFrame(ttk.Frame):
         if not selected:
             messagebox.showwarning("提示", "请至少勾选一名需改为不到场的到场人员")
             return
-        # 按原抽签顺序依次新增“后续不到场”记录
+        c = self.app.db.conn.cursor()
+        c.execute("SELECT title FROM sessions WHERE id=?", (self.supplement_session_id,))
+        row = c.fetchone()
+        original_title = row["title"] if row else ""
+        new_title = f"（补抽）{original_title}"
+        
+        self.supp_new_session_id = self.app.db.create_session(new_title)
+        
         selected_sorted = sorted(
             selected,
             key=lambda lid: self.supp_present_logs_by_id[lid]["order_no"] if lid in self.supp_present_logs_by_id else 0,
         )
+        order_no = 1
         for log_id in selected_sorted:
             log_info = self.supp_present_logs_by_id.get(log_id)
             if log_info:
-                self.app.db.add_supplement_absent_log(
-                    self.supplement_session_id,
+                self.app.db.add_draw_log(
+                    self.supp_new_session_id,
                     log_info["person_id"],
+                    order_no,
+                    present=False,
+                    absent_reason="专家后续不到场，进行再次抽选。",
                 )
+                order_no += 1
         self._show_supplement_step3()
 
     def _ask_reason_dialog(self, prompt="请输入不到场理由"):
@@ -1969,7 +1982,7 @@ class DrawFrame(ttk.Frame):
             if reason is None:
                 return
         self.app.db.add_draw_log(
-            self.supplement_session_id,
+            self.supp_new_session_id,
             self.supp_current_person["id"],
             self.supp_order_no,
             present,
@@ -1988,14 +2001,17 @@ class DrawFrame(ttk.Frame):
         if self.supp_present_count >= self.supplement_vacant_count:
             self.supp_btn_draw["state"] = "disabled"
             self.supp_status_var.set("补录已完成")
+            self.app.db.complete_session(self.supp_new_session_id)
             messagebox.showinfo("完成", "本次补录流程已完成")
-            self.app.send_sessions_email(self, [self.supplement_session_id])
+            self.app.send_sessions_email(self, [self.supp_new_session_id])
             self._show_choice()
 
     def _supplement_finish(self):
         if self.supp_present_count < self.supplement_vacant_count:
             if not messagebox.askyesno("提示", "尚未补足全部名额，确定要结束吗？"):
                 return
+        if self.supp_new_session_id:
+            self.app.db.complete_session(self.supp_new_session_id)
         self._show_choice()
 
     def set_buttons_state(self, started):
