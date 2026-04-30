@@ -1,5 +1,6 @@
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog
+import tkinter.font as tkfont
 import sqlite3
 import hashlib
 import datetime
@@ -2807,10 +2808,13 @@ class App(tk.Tk):
         # 全局按钮默认内边距稍大
         self.style.configure("TButton", padding=(12, 6))
 
-        # Treeview 行高与字体
+        # Treeview 行高与字体（根据字体实际高度动态计算）
+        font_obj = tkfont.Font(family=BASE_FONT[0], size=BASE_FONT[1])
+        font_metrics = font_obj.metrics()
+        row_height = font_metrics["linespace"] + 10
         self.style.configure(
             "Treeview",
-            rowheight=34,
+            rowheight=row_height,
             font=BASE_FONT,
         )
         self.style.configure(
