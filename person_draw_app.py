@@ -975,6 +975,7 @@ class PeopleFrame(ttk.Frame):
                 "end",
                 values=(row["id"], row["name"], row["unit"] or "", row["phone"], blocked_text),
             )
+        self.app.auto_adjust_columns(self.tree)
 
     def _get_selected_id(self):
         sel = self.tree.selection()
@@ -1305,6 +1306,7 @@ class LogsFrame(ttk.Frame):
             )
         for i in self.logs_tree.get_children():
             self.logs_tree.delete(i)
+        self.app.auto_adjust_columns(self.sessions_tree)
 
     def _get_present_display(self, r):
         """到场情况显示：到场 / 后续不到场 / 不到场"""
@@ -1335,6 +1337,7 @@ class LogsFrame(ttk.Frame):
                     r["absent_reason"] or "",
                 ),
             )
+        self.app.auto_adjust_columns(self.logs_tree)
 
     def export_all_logs(self):
         """导出所有日志为txt文件"""
@@ -1782,6 +1785,7 @@ class DrawFrame(ttk.Frame):
                 "", "end",
                 values=(s["id"], s["title"], s["created_at"]),
             )
+        self.app.auto_adjust_columns(self.supp_sessions_tree)
 
     def _show_supplement_step1(self):
         self.supp_step2.pack_forget()
@@ -2288,6 +2292,7 @@ class UsersFrame(ttk.Frame):
                 "end",
                 values=(row["id"], row["username"], row["email"] or "", role_text),
             )
+        self.app.auto_adjust_columns(self.tree)
 
     def _get_selected_id_role(self):
         sel = self.tree.selection()
@@ -2554,6 +2559,7 @@ class MailConfigFrame(ttk.Frame):
             self.email_tree.delete(i)
         for r in self.app.db.get_email_recipients():
             self.email_tree.insert("", "end", values=(r["id"], r["email"], r["name"] or ""))
+        self.app.auto_adjust_columns(self.email_tree)
 
     def _add_email(self):
         self._edit_email_dialog()
@@ -2966,6 +2972,62 @@ class App(tk.Tk):
             self.tk.call("tk", "scaling", scaling)
         except Exception:
             pass
+
+    @staticmethod
+    def auto_adjust_columns(tree, padding=20, last_column_stretch=True):
+        """
+        自适应调整Treeview列宽
+        :param tree: Treeview控件
+        :param padding: 每列内边距
+        :param last_column_stretch: 是否将剩余宽度分配给最后一列
+        """
+        tree.update_idletasks()
+        
+        columns = tree["columns"]
+        if not columns:
+            return
+        
+        font_obj = tkfont.Font(family=BASE_FONT[0], size=BASE_FONT[1])
+        col_widths = {}
+        visible_columns = []
+        
+        for col in columns:
+            current_width = tree.column(col, "width")
+            if current_width == 0:
+                col_widths[col] = 0
+                continue
+            visible_columns.append(col)
+            heading_text = tree.heading(col, option="text") or ""
+            heading_width = font_obj.measure(heading_text) + padding
+            col_widths[col] = heading_width
+        
+        for item in tree.get_children():
+            values = tree.item(item, "values")
+            for i, col in enumerate(columns):
+                if col not in visible_columns:
+                    continue
+                if i < len(values):
+                    cell_text = str(values[i]) if values[i] is not None else ""
+                    cell_width = font_obj.measure(cell_text) + padding
+                    if cell_width > col_widths[col]:
+                        col_widths[col] = cell_width
+        
+        total_width = sum(col_widths.values())
+        
+        tree_width = tree.winfo_width()
+        if tree_width <= 1:
+            tree_width = tree.winfo_reqwidth()
+        
+        if last_column_stretch and visible_columns and tree_width > total_width + 20:
+            last_col = visible_columns[-1]
+            extra_width = tree_width - total_width - 20
+            col_widths[last_col] += extra_width
+        
+        for col in columns:
+            if col_widths[col] == 0:
+                tree.column(col, width=0, minwidth=0)
+            else:
+                tree.column(col, width=col_widths[col], minwidth=50)
 
     def _show_frame(self, frame):
         for w in self.container.winfo_children():
