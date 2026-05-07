@@ -1881,22 +1881,36 @@ class DrawFrame(ttk.Frame):
                 order_no += 1
         self._show_supplement_step3()
 
-    def _ask_reason_dialog(self, prompt="请输入不到场理由"):
+    def _ask_reason_dialog(self, prompt="请选择不到场理由"):
+        ABSENT_REASONS = [
+            "工作忙，没空",
+            "出差在外，无法参加",
+            "身体不适，无法参加",
+            "电话没人接，联系不上",
+            "超出新专家上限人数",
+        ]
         dlg = tk.Toplevel(self)
         dlg.title(prompt)
         dlg.grab_set()
         dlg.resizable(False, False)
         container = ttk.Frame(dlg, padding=25)
-        container.grid(row=0, column=0, sticky="nsew")
-        dlg.columnconfigure(0, weight=1)
-        dlg.rowconfigure(0, weight=1)
-        ttk.Label(container, text="备注:").grid(row=0, column=0, padx=8, pady=8, sticky="nw")
-        text = tk.Text(container, width=45, height=5, font=BASE_FONT)
-        text.grid(row=0, column=1, padx=8, pady=8)
+        container.pack(fill="both", expand=True)
+        
+        ttk.Label(container, text="请选择不到场理由：", font=SUBTITLE_FONT).pack(anchor="w", pady=(0, 15))
+        
+        reason_var = tk.StringVar(value=ABSENT_REASONS[0])
+        for reason in ABSENT_REASONS:
+            ttk.Radiobutton(
+                container, 
+                text=reason, 
+                variable=reason_var, 
+                value=reason
+            ).pack(anchor="w", pady=3)
+        
         res = {"value": None}
 
         def on_ok():
-            res["value"] = text.get("1.0", "end").strip()
+            res["value"] = reason_var.get()
             dlg.destroy()
 
         def on_cancel():
@@ -1904,9 +1918,17 @@ class DrawFrame(ttk.Frame):
             dlg.destroy()
 
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=1, column=0, columnspan=2, pady=(15, 0))
-        ttk.Button(btn_frame, text="确定", command=on_ok, width=11).grid(row=0, column=0, padx=10)
-        ttk.Button(btn_frame, text="取消", command=on_cancel, width=11).grid(row=0, column=1, padx=10)
+        btn_frame.pack(pady=(20, 0))
+        ttk.Button(btn_frame, text="确定", command=on_ok, width=11).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="取消", command=on_cancel, width=11).pack(side="left", padx=10)
+        
+        dlg.update_idletasks()
+        width = dlg.winfo_width()
+        height = dlg.winfo_height()
+        x = (dlg.winfo_screenwidth() // 2) - (width // 2)
+        y = (dlg.winfo_screenheight() // 2) - (height // 2)
+        dlg.geometry(f"+{x}+{y}")
+        
         dlg.wait_window()
         return res["value"]
 
@@ -2172,26 +2194,36 @@ class DrawFrame(ttk.Frame):
             self._show_choice()
 
     def _ask_reason(self):
+        ABSENT_REASONS = [
+            "工作忙，没空",
+            "出差在外，无法参加",
+            "身体不适，无法参加",
+            "电话没人接，联系不上",
+            "超出新专家上限人数",
+        ]
         dlg = tk.Toplevel(self)
-        dlg.title("请输入不到场理由")
+        dlg.title("请选择不到场理由")
         dlg.grab_set()
         dlg.resizable(False, False)
 
         container = ttk.Frame(dlg, padding=25)
-        container.grid(row=0, column=0, sticky="nsew")
-        dlg.columnconfigure(0, weight=1)
-        dlg.rowconfigure(0, weight=1)
-
-        ttk.Label(container, text="不到场理由:").grid(
-            row=0, column=0, padx=8, pady=8, sticky="nw"
-        )
-        text = tk.Text(container, width=45, height=6, font=BASE_FONT)
-        text.grid(row=0, column=1, padx=8, pady=8)
+        container.pack(fill="both", expand=True)
+        
+        ttk.Label(container, text="请选择不到场理由：", font=SUBTITLE_FONT).pack(anchor="w", pady=(0, 15))
+        
+        reason_var = tk.StringVar(value=ABSENT_REASONS[0])
+        for reason in ABSENT_REASONS:
+            ttk.Radiobutton(
+                container, 
+                text=reason, 
+                variable=reason_var, 
+                value=reason
+            ).pack(anchor="w", pady=3)
 
         res = {"value": None}
 
         def on_ok():
-            res["value"] = text.get("1.0", "end").strip()
+            res["value"] = reason_var.get()
             dlg.destroy()
 
         def on_cancel():
@@ -2199,13 +2231,16 @@ class DrawFrame(ttk.Frame):
             dlg.destroy()
 
         btn_frame = ttk.Frame(container)
-        btn_frame.grid(row=1, column=0, columnspan=2, pady=(15, 0))
-        ttk.Button(btn_frame, text="确定", command=on_ok, width=11).grid(
-            row=0, column=0, padx=10
-        )
-        ttk.Button(btn_frame, text="取消", command=on_cancel, width=11).grid(
-            row=0, column=1, padx=10
-        )
+        btn_frame.pack(pady=(20, 0))
+        ttk.Button(btn_frame, text="确定", command=on_ok, width=11).pack(side="left", padx=10)
+        ttk.Button(btn_frame, text="取消", command=on_cancel, width=11).pack(side="left", padx=10)
+        
+        dlg.update_idletasks()
+        width = dlg.winfo_width()
+        height = dlg.winfo_height()
+        x = (dlg.winfo_screenwidth() // 2) - (width // 2)
+        y = (dlg.winfo_screenheight() // 2) - (height // 2)
+        dlg.geometry(f"+{x}+{y}")
 
         dlg.wait_window()
         return res["value"]
