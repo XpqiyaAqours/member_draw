@@ -1073,6 +1073,13 @@ class PeopleFrame(ttk.Frame):
             row=0, column=1, padx=10
         )
 
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = (dlg.winfo_screenwidth() // 2) - (w // 2)
+        y = (dlg.winfo_screenheight() // 2) - (h // 2)
+        dlg.geometry(f"+{x}+{y}")
+
     def delete_person(self):
         pid = self._get_selected_id()
         if not pid:
@@ -2441,6 +2448,13 @@ class UsersFrame(ttk.Frame):
         ttk.Button(btn_frame, text="取消", command=dlg.destroy, width=11).grid(
             row=0, column=1, padx=10
         )
+
+        dlg.update_idletasks()
+        w = dlg.winfo_width()
+        h = dlg.winfo_height()
+        x = (dlg.winfo_screenwidth() // 2) - (w // 2)
+        y = (dlg.winfo_screenheight() // 2) - (h // 2)
+        dlg.geometry(f"+{x}+{y}")
 
     def delete_user(self):
         uid, role = self._get_selected_id_role()
