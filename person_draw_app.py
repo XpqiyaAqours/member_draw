@@ -1888,7 +1888,7 @@ class DrawFrame(ttk.Frame):
                 order_no += 1
         self._show_supplement_step3()
 
-    def _ask_reason_dialog(self, prompt="请选择不到场理由"):
+    def _ask_reason_dialog(self, prompt="专家不到场"):
         ABSENT_REASONS = [
             "工作忙，没空",
             "出差在外，无法参加",
@@ -2209,7 +2209,7 @@ class DrawFrame(ttk.Frame):
             "超出新专家上限人数",
         ]
         dlg = tk.Toplevel(self)
-        dlg.title("请选择不到场理由")
+        dlg.title("专家不到场")
         dlg.grab_set()
         dlg.resizable(False, False)
 
