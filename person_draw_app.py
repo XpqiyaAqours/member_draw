@@ -142,6 +142,10 @@ class Database:
             c.execute("ALTER TABLE people ADD COLUMN blocked INTEGER NOT NULL DEFAULT 0")
         except sqlite3.OperationalError:
             pass
+        try:
+            c.execute("ALTER TABLE people ADD COLUMN present_count INTEGER NOT NULL DEFAULT 0")
+        except sqlite3.OperationalError:
+            pass
 
         # 抽签会话索引表（每次完整抽 3 人为一次记录）
         c.execute(
@@ -399,6 +403,24 @@ class Database:
         c.execute(
             "UPDATE people SET blocked=? WHERE id=?",
             (1 if blocked else 0, person_id),
+        )
+        self.conn.commit()
+
+    def increment_present_count(self, person_id):
+        """增加专家到场次数"""
+        c = self.conn.cursor()
+        c.execute(
+            "UPDATE people SET present_count = COALESCE(present_count, 0) + 1 WHERE id=?",
+            (person_id,),
+        )
+        self.conn.commit()
+
+    def decrement_present_count(self, person_id):
+        """减少专家到场次数"""
+        c = self.conn.cursor()
+        c.execute(
+            "UPDATE people SET present_count = MAX(COALESCE(present_count, 0) - 1, 0) WHERE id=?",
+            (person_id,),
         )
         self.conn.commit()
 
@@ -1885,6 +1907,7 @@ class DrawFrame(ttk.Frame):
                     present=False,
                     absent_reason="专家后续不到场，进行再次抽选。",
                 )
+                self.app.db.decrement_present_count(log_info["person_id"])
                 order_no += 1
         self._show_supplement_step3()
 
@@ -2025,6 +2048,7 @@ class DrawFrame(ttk.Frame):
         if present:
             self.supp_present_count += 1
             self.supp_present_var.set(f"{self.supp_present_count} / {self.supplement_vacant_count}")
+            self.app.db.increment_present_count(self.supp_current_person["id"])
         self.supp_current_person = None
         self.supp_name_var.set("")
         self.supp_phone_var.set("")
@@ -2182,6 +2206,7 @@ class DrawFrame(ttk.Frame):
         if present:
             self.present_count += 1
             self.present_var.set(f"{self.present_count} / 3")
+            self.app.db.increment_present_count(self.current_person["id"])
 
         self.current_person = None
         self.name_var.set("")
@@ -2251,6 +2276,60 @@ class DrawFrame(ttk.Frame):
 
         dlg.wait_window()
         return res["value"]
+
+
+class StatsFrame(ttk.Frame):
+    """统计信息界面"""
+
+    def __init__(self, master, app):
+        super().__init__(master)
+        self.app = app
+        self.build_ui()
+
+    def build_ui(self):
+        outer = ttk.Frame(self, padding=15)
+        outer.pack(fill="both", expand=True)
+
+        ttk.Label(outer, text="专家到场统计", font=SUBTITLE_FONT).pack(anchor="w", pady=(0, 10))
+
+        btn_bar = ttk.Frame(outer)
+        btn_bar.pack(pady=(0, 10))
+        ttk.Button(btn_bar, text="刷新", command=self.refresh, width=9).pack(side="left", padx=5)
+
+        tree_frame = ttk.Frame(outer)
+        tree_frame.pack(fill="both", expand=True)
+
+        columns = ("id", "name", "unit", "present_count")
+        self.tree = ttk.Treeview(tree_frame, columns=columns, show="headings", height=15)
+        self.tree.heading("id", text="")
+        self.tree.heading("name", text="专家姓名")
+        self.tree.heading("unit", text="单位")
+        self.tree.heading("present_count", text="到场次数")
+        self.tree.column("id", width=0, minwidth=0, stretch=False)
+        self.tree.column("name", width=150, anchor="w")
+        self.tree.column("unit", width=200, anchor="w")
+        self.tree.column("present_count", width=100, anchor="center")
+        self.tree.pack(side="left", fill="both", expand=True)
+
+        vsb = ttk.Scrollbar(tree_frame, orient="vertical", command=self.tree.yview)
+        self.tree.configure(yscrollcommand=vsb.set)
+        vsb.pack(side="right", fill="y")
+
+    def refresh(self):
+        for i in self.tree.get_children():
+            self.tree.delete(i)
+        c = self.app.db.conn.cursor()
+        c.execute(
+            "SELECT id, name, unit, COALESCE(present_count, 0) as present_count "
+            "FROM people WHERE blocked=0 ORDER BY present_count DESC, name ASC"
+        )
+        for row in c.fetchall():
+            self.tree.insert(
+                "",
+                "end",
+                values=(row["id"], row["name"], row["unit"] or "", row["present_count"]),
+            )
+        self.app.auto_adjust_columns(self.tree)
 
 
 class UsersFrame(ttk.Frame):
@@ -2764,15 +2843,17 @@ class MainFrame(ttk.Frame):
         self.people_frame = PeopleFrame(self.notebook, self.app)
         self.draw_frame = DrawFrame(self.notebook, self.app)
         self.logs_frame = LogsFrame(self.notebook, self.app)
+        self.stats_frame = StatsFrame(self.notebook, self.app)
         self.account_frame = UsersFrame(self.notebook, self.app)
         self.mail_frame = MailConfigFrame(self.notebook, self.app)
 
         self.notebook.add(self.draw_frame, text="抽签")
         self.notebook.add(self.people_frame, text="专家名库")
         self.notebook.add(self.logs_frame, text="日志")
+        self.notebook.add(self.stats_frame, text="统计信息")
         # 账户管理 / 邮件设置 Tab 在管理员登录后动态添加
         
-        # 绑定 tab 切换事件，切换到日志界面时自动刷新
+        # 绑定 tab 切换事件，切换到日志/统计界面时自动刷新
         self.notebook.bind("<<NotebookTabChanged>>", self._on_tab_changed)
 
     def refresh_user_info(self):
@@ -2807,11 +2888,15 @@ class MainFrame(ttk.Frame):
                 self.mail_tab_added = False
 
     def _on_tab_changed(self, event):
-        """Tab 切换事件处理，切换到日志界面时自动刷新"""
+        """Tab 切换事件处理"""
         current_tab = self.notebook.index(self.notebook.select())
-        # 日志界面是第3个tab（索引为2）
-        if current_tab == 2:
+        tab_count = self.notebook.index("end")
+        logs_index = 2
+        stats_index = 3
+        if current_tab == logs_index:
             self.logs_frame.refresh_sessions()
+        elif current_tab == stats_index:
+            self.stats_frame.refresh()
 
     def logout(self):
         if messagebox.askyesno("确认", "确定要退出登录吗？"):
